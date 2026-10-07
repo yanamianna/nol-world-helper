@@ -1,0 +1,88 @@
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const labels = { armed: '等待开售', running: '正在运行', 'waiting-manual': '等待人工接管', paused: '已暂停', missed: '错过触发时间', stopped: '已停止', payment: '已到付款页' };
+  const finalStatuses = new Set(['stopped', 'payment', 'missed']);
+  let state = { tasks: [], run: null };
+  let pending = false;
+  let actionPending = false;
+  async function request(type, payload = {}) {
+    const result = await chrome.runtime.sendMessage({ type, ...payload });
+    if (!result?.ok) throw new Error(result?.error || '扩展服务暂时不可用。');
+    return result.data;
+  }
+  function notice(text, error = false) { $('popup-message').textContent = text; $('popup-message').className = `notice compact${error ? ' error' : ' success'}`; $('popup-message').hidden = false; }
+  function fail(error) { notice(error?.message || String(error), true); }
+  function formatTime(iso, zone) {
+    const date = new Date(iso);
+    if (!Number.isFinite(date.getTime())) return '';
+    return new Intl.DateTimeFormat('zh-CN', { timeZone: zone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
+  }
+  function selectedTask() { return state.tasks.find((task) => task.id === $('popup-task').value); }
+  function renderTasks() {
+    const active = state.run && !finalStatuses.has(state.run.status);
+    const selected = active ? state.run.taskId : $('popup-task').value || state.tasks[0]?.id || '';
+    $('popup-task').replaceChildren();
+    if (!state.tasks.length) $('popup-task').append(new Option('暂无任务，请先打开设置', ''));
+    for (const task of state.tasks) $('popup-task').append(new Option(task.name || '未命名任务', task.id));
+    $('popup-task').value = state.tasks.some((task) => task.id === selected) ? selected : state.tasks[0]?.id || '';
+    $('popup-task').disabled = Boolean(state.run && !finalStatuses.has(state.run.status));
+  }
+  function render() {
+    const run = state.run;
+    const task = run && !finalStatuses.has(run.status) ? state.tasks.find((item) => item.id === run.taskId) || run.task : selectedTask();
+    const active = Boolean(run && !finalStatuses.has(run.status));
+    $('run-detail').hidden = !task;
+    const opened = task && new Date(task.openAt).getTime() <= Date.now();
+    $('run-status').textContent = run && (active || run.taskId === task?.id) ? labels[run.status] || '任务状态' : '尚未开始';
+    $('run-status').className = `badge${run?.status === 'payment' ? ' success' : run?.status === 'waiting-manual' || run?.status === 'missed' ? ' caution' : ''}`;
+    $('run-detail').textContent = active || run?.taskId === task?.id ? [run?.step, run?.reason].filter(Boolean).join(' · ') || '等待任务状态更新。' : '保存任务后，在这里开始值守。';
+    $('popup-arm').hidden = active || Boolean(opened);
+    $('popup-immediate').hidden = active || !opened;
+    $('popup-arm').disabled = !task || actionPending;
+    $('popup-immediate').disabled = !task || actionPending;
+    $('popup-pause').hidden = !active || run.status === 'paused' || run.status === 'waiting-manual';
+    $('popup-resume').hidden = !active || !['paused', 'waiting-manual'].includes(run.status);
+    $('popup-stop').hidden = !active;
+    for (const id of ['popup-pause', 'popup-resume', 'popup-stop']) $(id).disabled = actionPending;
+    if (!task) { $('countdown-label').textContent = '距离开售'; $('countdown').textContent = '—'; $('sale-time').textContent = '先在设置中添加商品和联系人。'; return; }
+    const diff = new Date(task.openAt).getTime() - Date.now();
+    if (!Number.isFinite(diff)) { $('countdown').textContent = '—'; $('sale-time').textContent = '请在设置中补全开售时间。'; return; }
+    const seconds = Math.max(0, Math.ceil(diff / 1000));
+    const days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60), remainder = seconds % 60;
+    $('countdown-label').textContent = diff > 0 ? '距离开售' : '已开售';
+    $('countdown').textContent = diff > 0 ? `${days ? `${days}天 ` : ''}${[hours, minutes, remainder].map((value) => String(value).padStart(2, '0')).join(':')}` : run?.status === 'payment' ? '停在付款页' : '00:00:00';
+    $('sale-time').textContent = `北京 ${formatTime(task.openAt, 'Asia/Shanghai')} / 韩国 ${formatTime(task.openAt, 'Asia/Seoul')}`;
+    if (opened && !active && run?.status !== 'payment') $('run-detail').textContent = '立即启动官方入口；当前选场次、选票和订单需由你继续操作。';
+  }
+  async function refresh() {
+    if (pending) return;
+    pending = true;
+    try { state = { tasks: [], run: null, ...await request('GET_STATE') }; renderTasks(); render(); } finally { pending = false; }
+  }
+  async function act(type, payload = {}) {
+    if (actionPending) return;
+    actionPending = true; render();
+    try { await request(type, payload); await refresh(); $('popup-message').hidden = true; } catch (error) { fail(error); } finally { actionPending = false; render(); }
+  }
+  async function diagnostics() {
+    const data = await request('EXPORT_DIAGNOSTICS');
+    if (!data?.downloaded && !data?.exported && data != null) {
+      const payload = data?.diagnostics ?? data?.json ?? data?.text ?? data;
+      const href = URL.createObjectURL(new Blob([typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+      const anchor = document.createElement('a'); anchor.href = href; anchor.download = `nol-helper-diagnostics-${Date.now()}.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(href), 1000);
+    }
+    notice('诊断已导出。');
+  }
+  $('open-options').addEventListener('click', () => request('OPEN_OPTIONS').catch(fail));
+  $('popup-task').addEventListener('change', render);
+  $('popup-arm').addEventListener('click', () => { const task = selectedTask(); if (task) act('ARM', { taskId: task.id }); });
+  $('popup-immediate').addEventListener('click', () => { const task = selectedTask(); if (task) act('ARM', { taskId: task.id, immediate: true }); });
+  $('popup-pause').addEventListener('click', () => act('PAUSE'));
+  $('popup-resume').addEventListener('click', () => act('RESUME'));
+  $('popup-stop').addEventListener('click', () => act('STOP'));
+  $('popup-diagnostics').addEventListener('click', () => diagnostics().catch(fail));
+  chrome.storage.onChanged.addListener((_changes, area) => { if (area === 'local') refresh().catch(fail); });
+  setInterval(() => refresh().catch(fail), 1000);
+  refresh().catch(fail);
+})();

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NOL 公演助手 · 任务设置</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="core.js" defer></script>
+  <script src="options.js" defer></script>
+</head>
+<body class="options-page">
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">N</span><div><h1>NOL 公演助手</h1><p>前台值守 · 官方入口辅助</p></div></div>
+    <nav class="tabs" aria-label="设置分类">
+      <button type="button" class="tab active" id="tasks-tab" aria-controls="tasks-view" aria-pressed="true">购票任务</button>
+      <button type="button" class="tab" id="profiles-tab" aria-controls="profiles-view" aria-pressed="false">联系人</button>
+    </nav>
+  </header>
+  <main class="app-shell">
+    <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
+    <section id="tasks-view" class="workspace" aria-label="购票任务设置">
+      <aside class="sidebar panel">
+        <div class="section-heading"><h2>任务</h2><button id="new-task" type="button" class="button small">新建</button></div>
+        <div id="task-list" class="item-list"></div>
+        <div class="sidebar-note">同时运行一个任务。浏览器保持前台，遇到登录、验证或未知页面时由你接管。</div>
+      </aside>
+      <section class="editor panel">
+        <div class="editor-heading"><div><p class="eyebrow">任务设置</p><h2 id="task-editor-title">新建购票任务</h2></div><span id="task-saved" class="muted small-text">尚未保存</span></div>
+        <form id="task-form">
+          <div class="form-grid">
+            <label class="field full">任务名称<input id="task-name" name="name" maxlength="120" required placeholder="例如：JEONGHAN & JOSHUA 酒店套餐"></label>
+            <label class="field full">NOL 商品链接<div class="input-action"><input id="product-url" name="productUrl" type="url" required placeholder="https://world.nol.com/zh-CN/ticket/places/…/products/…"><button id="read-product" type="button" class="button secondary">重新读取</button></div><span id="product-read-status" class="hint" role="status">粘贴商品链接后，自动读取开售时间和公开票档。</span></label>
+          </div>
+          <div id="product-summary" class="product-summary" hidden></div>
+          <div class="form-grid">
+            <label class="field">商品类型<select id="task-kind"><option value="package">Play＆Stay 酒店套餐</option><option value="ticket">普通公演票</option></select></label>
+            <label class="field">开售阶段<select id="task-stage"><option value="general">常规开售</option><option value="presale">会员 / 先行开售</option></select></label>
+            <label class="field full">开售时间（自动读取，北京时间）<input id="open-at" type="datetime-local" step="60" required><span id="open-at-hint" class="hint">自动按开售阶段填入。官网未公布或测试倒计时时，可手动设置。</span></label>
+            <label class="field full"><span id="quantity-label">套餐数量（份）</span><input id="quantity" type="number" min="1" max="20" step="1" value="1" required><span id="quantity-hint" class="hint">每份人数在下方购票选择中填写。</span></label>
+            <label class="field full">联系人<select id="task-profile" required><option value="">请选择已保存的联系人</option></select><span class="hint">联系方式保存在本机。可在上方「联系人」中添加。</span></label>
+          </div>
+          <div class="section-heading alternatives-heading"><div><h3>购票优先顺序</h3><p class="hint">第一选择最想买，买不到再看第二选择。每个选择填写场次和酒店 / 票档；演出时间使用韩国时间。</p></div><button id="add-alternative" type="button" class="button secondary small">添加购票选择</button></div>
+          <div id="alternatives" class="alternatives"></div>
+          <div class="notice neutral compact">不设价格上限，按上述顺序保存购票偏好。当前进入后的选场次、选票和下单仍由你操作；座区及酒店套餐的实际选择以售票页为准。</div>
+          <div class="form-actions"><button type="submit" class="button">保存任务</button><button id="arm-task" type="button" class="button secondary">保存并值守</button><button id="start-now" type="button" class="button" hidden>立即开始</button><button id="delete-task" type="button" class="button danger quiet" hidden>删除任务</button></div>
+          <p id="start-hint" class="hint">到达开售时间后在当前浏览器前台继续。登录、验证码和支付均需你完成。</p>
+        </form>
+      </section>
+    </section>
+    <section id="profiles-view" class="workspace" aria-label="联系人设置" hidden>
+      <aside class="sidebar panel"><div class="section-heading"><h2>联系人</h2><button id="new-profile" type="button" class="button small">新建</button></div><div id="profile-list" class="item-list"></div><div class="sidebar-note">长期保存在本机扩展存储中。删除全部数据会一并删除联系人。</div></aside>
+      <section class="editor panel"><div class="editor-heading"><div><p class="eyebrow">本机联系人</p><h2 id="profile-editor-title">添加联系人</h2></div></div>
+        <form id="profile-form"><div class="form-grid">
+          <label class="field full">联系人名称<input id="profile-label" maxlength="80" required placeholder="例如：本人"></label>
+          <label class="field">姓（与证件一致）<input id="profile-last-name" autocomplete="family-name" maxlength="100" required></label>
+          <label class="field">名（与证件一致）<input id="profile-first-name" autocomplete="given-name" maxlength="100" required></label>
+          <label class="field full">电子邮箱<input id="profile-email" type="email" autocomplete="email" maxlength="200" required></label>
+          <label class="field">国家 / 地区电话代码<input id="profile-country-code" maxlength="8" placeholder="例如：+86" required></label>
+          <label class="field">电话号码<input id="profile-phone" type="tel" autocomplete="tel-national" maxlength="30" required><span class="hint">填写号码本身，不含上方国家区号。</span></label>
+        </div><div class="form-actions"><button type="submit" class="button">保存联系人</button><button id="delete-profile" type="button" class="button danger quiet" hidden>删除联系人</button></div></form>
+      </section>
+    </section>
+    <section class="panel capability-panel"><div class="section-heading"><h2>适配状态</h2><span class="badge caution">售票后段未实测</span></div><p>商品信息和预约入口已核对。场次、选座、订单及付款页面需要在正常售票流程中验证；遇到不支持的页面会暂停，等待人工接管。</p><div id="capabilities" class="capability-list"></div><div id="run-summary" class="run-summary" hidden></div></section>
+    <footer class="settings-footer"><span>请保持 Chrome 或 Edge 前台运行。</span><div class="footer-actions"><button id="export-diagnostics" type="button" class="text-button">导出诊断</button><button id="delete-all" type="button" class="text-button danger">删除全部本机数据</button></div></footer>
+  </main>
+</body>
+</html>

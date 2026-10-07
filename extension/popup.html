@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN" class="popup-document">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NOL 公演助手</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="popup.css">
+  <script src="core.js" defer></script>
+  <script src="popup.js" defer></script>
+</head>
+<body class="popup-page">
+  <main class="popup-shell">
+    <div class="popup-heading"><div class="brand"><span class="brand-mark" aria-hidden="true">N</span><div><h1>NOL 公演助手</h1><p>前台值守 · 官方入口辅助</p></div></div><button id="open-options" type="button" class="text-button">设置</button></div>
+    <div id="popup-message" class="notice compact" role="status" aria-live="polite" hidden></div>
+    <label class="field">购票任务<select id="popup-task"><option value="">暂无任务</option></select></label>
+    <section class="countdown-panel"><span id="run-status" class="badge">尚未开始</span><p id="countdown-label" class="muted">距离开售</p><div id="countdown" class="countdown" aria-label="开售倒计时">—</div><p id="sale-time" class="hint">先在设置中添加商品和联系人。</p></section>
+    <p id="run-detail" class="run-detail" aria-live="polite">保存任务后，在这里开始值守。</p>
+    <div class="popup-actions"><button id="popup-arm" type="button" class="button" disabled>开始值守</button><button id="popup-immediate" type="button" class="button" hidden>立即开始</button><button id="popup-pause" type="button" class="button secondary" hidden>暂停</button><button id="popup-resume" type="button" class="button" hidden>继续</button><button id="popup-stop" type="button" class="button danger secondary" hidden>停止</button></div>
+    <div class="notice neutral compact popup-boundary"><strong>售票后段未实测</strong><p>当前仅自动启动官方入口。场次、选票、信息填写与订单由你接管；请保持购票页前台。</p></div>
+    <button id="popup-diagnostics" type="button" class="text-button diagnostics-button">导出诊断</button>
+  </main>
+</body>
+</html>

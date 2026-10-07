@@ -1,0 +1,14 @@
+# Local research captures and extracted distribution copies
+/research/
+/NOL_World_Helper_v*/
+/NOL_World_Helper_v*.zip
+/NOL_World_技术原理研究.md
+/NOL_World_票品与场次标识.md
+
+# Local development files
+__pycache__/
+*.pyc
+node_modules/
+.env
+.env.*
+*.log

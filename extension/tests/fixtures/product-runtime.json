@@ -1,0 +1,57 @@
+{
+  "responses": [
+    {
+      "url": "https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?goodsCode=26013792&placeCode=26001167&bizCode=10965",
+      "json": {
+        "data": {
+          "goodsCode": "26013792",
+          "placeCode": "26001167",
+          "salesInfo": {
+            "displayViewRateType": 0,
+            "playStartDate": "2026-10-30",
+            "playEndDate": "2026-11-01",
+            "bookingOpenTime": "2026-10-12 20:00:00",
+            "bookingEndTime": "2026-10-31 11:00:59",
+            "goodsStatus": "Y"
+          },
+          "preSalesInfo": [
+            {
+              "goodsCode": "26013792",
+              "placeCode": "26001167",
+              "preBookingKindCode": "I0007",
+              "preBookingKindName": "팬클럽 선예매",
+              "bizCode": "10965",
+              "memberGrade": "",
+              "bookingOpenTime": "2026-10-08 20:00:00",
+              "bookingEndTime": "2026-10-08 23:59:00",
+              "bigo": "",
+              "seq": 170194,
+              "mobileYn": "N",
+              "limitType": "",
+              "limitCount": 0,
+              "limitPlaySeq": "N",
+              "authGroup": true,
+              "buttonName": "Membership Member",
+              "authGroupSeq": 0,
+              "authGroupName": "",
+              "checkStartTime": "2026-10-06 14:00:00",
+              "checkEndTime": "2026-10-08 23:59:00",
+              "checkField1": "B6001",
+              "checkFieldName1": "Name",
+              "checkField2": "B6002",
+              "checkFieldName2": "ID",
+              "checkField3": "",
+              "checkFieldName3": "",
+              "checkField4": "",
+              "checkFieldName4": "",
+              "checkField5": "",
+              "checkFieldName5": "",
+              "createdAt": "2026-10-06 15:46:38"
+            }
+          ],
+          "preSalesTimeInfo": []
+        }
+      }
+    }
+  ]
+}

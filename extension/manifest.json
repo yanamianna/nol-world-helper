@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "NOL 公演助手",
+  "version": "0.1.2",
+  "description": "本机任务配置、前台开票计时与官方入口辅助。验证码人工完成，支付人工操作。",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://world.nol.com/*", "https://tickets.interpark.com/*", "https://ticket.globalinterpark.com/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "NOL 公演助手"},
+  "options_page": "options.html",
+  "content_scripts": [{
+    "matches": ["https://world.nol.com/*", "https://tickets.interpark.com/*", "https://ticket.globalinterpark.com/*"],
+    "js": ["core.js", "adapters/nol.js", "adapters/global.js", "content.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }],
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"}
+}

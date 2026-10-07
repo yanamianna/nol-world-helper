@@ -1,0 +1,30 @@
+/* Toolbar popups size themselves from the document's intrinsic dimensions.
+   A vw maximum on the body makes the initial narrow viewport constrain itself. */
+html.popup-document {
+  width: 360px;
+  min-width: 360px;
+}
+
+.popup-page {
+  width: 360px;
+  min-width: 360px;
+  max-width: none;
+  min-height: 0;
+}
+
+.popup-shell { padding: 16px; }
+.popup-heading { margin-bottom: 16px; }
+.popup-heading .brand { flex: 1; min-width: 0; }
+.popup-heading .brand-mark { flex: 0 0 34px; }
+.popup-heading .brand > div { min-width: 0; }
+.popup-heading h1 { line-height: 1.4; white-space: nowrap; }
+.popup-heading .brand p { line-height: 1.5; white-space: nowrap; }
+.popup-heading .text-button {
+  flex: 0 0 auto;
+  min-width: 44px;
+  white-space: nowrap;
+}
+.countdown-panel { padding: 16px 0 8px; }
+.countdown-panel .muted { margin-top: 13px; }
+.popup-boundary { margin-top: 16px; }
+.run-detail { min-height: 0; margin: 4px 0 14px; }
