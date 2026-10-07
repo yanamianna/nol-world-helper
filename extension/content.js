@@ -54,15 +54,18 @@
       if(decision==='hidden' && now>=Date.parse(r.openAt)){await pause('开票时商品页不在前台，请停止后重新启动');return;}
       if(decision!=='fire') return;
       const state=a.inspect(document,context);
-      if(state.kind==='entry' && state.canEnter===false){reason.textContent=state.reason;return;}
+      if(state.kind==='entry' && state.canEnter===false && a.entryMode!=='api'){reason.textContent=state.reason;return;}
       if(state.kind!=='entry') {await pageState({status:'manual',reason:state.reason || '购票按钮尚未准备好，请人工处理'});return;}
       claimInFlight=true;
       try {
         const claim=await send({type:'CLAIM_ENTRY',runId:r.id,visible:true,lastTick:previous});
-        // Claim is durably recorded before the official button is ever clicked.
+        // Claim is durable before the official API flow starts.
         context.run.entryClaimed=claim.claimed;
-        const result=await a.enter(document,context);
-        await send({type:'ENTRY_RESULT',runId:r.id,clicked:result?.clicked===true});
+        const result=await a.enter(document,{...context,requestEntry:()=>send({type:'API_ENTRY',runId:r.id})});
+        if(result?.code!=='ENTRY_REDIRECTING') {
+          await refresh();
+          return;
+        }
         await refresh();
       }catch(e){await pause(e.message);}finally {claimInFlight=false;}
     } else {

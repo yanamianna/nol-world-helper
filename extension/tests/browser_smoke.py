@@ -1,7 +1,7 @@
 """Isolated Chromium MV3 integration test. No real login, queue, order or payment.
 Browser plugin not available; Playwright exercises our own extension and local fixtures.
 Screenshots and browser profiles stay outside source.
-Flow: product URL -> automatic public metadata -> ordered choices -> saved foreground run.
+Flow: product URL -> official sale time -> explicit presale window -> saved foreground run.
 """
 import json
 import os
@@ -29,10 +29,12 @@ SALES = next(r['json'] for r in RUNTIME['responses'] if 'salesinfo?' in r['url']
 # Preserve captured Flight as inert data, strip all external JS/network references.
 scripts = re.findall(r'<script\b[^>]*>([\s\S]*?)</script\s*>', RAW, re.I)
 flight = ''.join('<script type="application/json">'+s+'</script>' for s in scripts if 'self.__next_f.push' in s)
-# Button structure comes from the captured real page. State changes are fixture-only.
+# Button structure comes from the captured real page. The challenge below is a
+# test double only; real official challenge and account validation remain required.
 FIXTURE = '''<!doctype html><html><head><meta charset="utf-8"><title>NOL 捕获结构计时测试</title></head><body>
 <h1>NOL 本地入口测试</h1><p>真实按钮结构，离线场景，无订单。</p>
 <div class="grid-area_purchase-button"><button class="nds-e-rectangle-button--variant_filled_primary" onclick="window.entryClicks=(window.entryClicks||0)+1">预约</button></div>
+<script>window.turnstile={render:(_container,options)=>{setTimeout(()=>options.callback("fixture-turnstile"),0);return "fixture-widget";},remove:()=>{}};</script>
 '''+flight+'</body></html>'
 
 def call(page, kind, **kwargs):
@@ -43,6 +45,7 @@ def call(page, kind, **kwargs):
 def run():
     errors = []
     warnings = []
+    entry_posts = []
     with sync_playwright() as p:
         profile = tempfile.mkdtemp(prefix='nol-browser-qa-')
         context = p.chromium.launch_persistent_context(profile, executable_path=EXECUTABLE, headless=True,
@@ -53,6 +56,19 @@ def run():
                 req.continue_()
             elif '/api/ent-channel-out/v1/goods/salesinfo?' in req.request.url:
                 req.fulfill(json=SALES)
+            elif req.request.url.startswith('https://world.nol.com/api/users/enter?'):
+                req.fulfill(json={'enterHasEmail':True})
+            elif req.request.url=='https://world.nol.com/api/users':
+                req.fulfill(json={'uid':'fixture-uid'})
+            elif req.request.url=='https://world.nol.com/api/users/enter/token':
+                assert req.request.method=='POST'
+                payload=req.request.post_data_json
+                assert str(payload['goodsCode'])=='26013792' and str(payload['placeCode'])=='26001167'
+                assert payload['turnstileToken']=='fixture-turnstile'
+                entry_posts.append(payload)
+                req.fulfill(json={'access_token':'fixture-access','refresh_token':'fixture-refresh'})
+            elif req.request.url.startswith('https://tickets.interpark.com/gates/partner?'):
+                req.fulfill(body='<!doctype html><html><head><title>Official gate fixture</title></head><body><h1>Official gate fixture</h1><p>No real queue or inventory.</p></body></html>',content_type='text/html; charset=utf-8')
             elif req.request.url == URL:
                 req.fulfill(body=FIXTURE, content_type='text/html; charset=utf-8')
             else:
@@ -99,27 +115,53 @@ def run():
         reads=worker.evaluate('globalThis.__fixtureReads')
         page.locator('#product-url').fill('')
         page.locator('#product-url').fill(URL)
-        page.wait_for_function('() => document.querySelector("#product-summary").textContent.includes("26013792") && document.querySelector("#open-at").value==="2026-10-12T19:00"')
+        page.wait_for_function('() => document.querySelector("#product-summary").textContent.includes("26013792") && document.querySelector("#open-at").value==="2026-10-12 19:00"')
         assert worker.evaluate('globalThis.__fixtureReads')>reads
         assert page.locator('.alt-package-select option').count()==25
-        assert '2026-10-12T19:00'==page.locator('#open-at').input_value()
+        assert '2026-10-12 19:00'==page.locator('#open-at').input_value()
+        assert not page.locator('#open-at').is_editable(), 'Official sale time must be read-only'
+        assert page.locator('input[type="datetime-local"]').count()==0
         assert '20:00' in page.locator('#open-at-hint').inner_text()
         page.locator('#task-stage').select_option('presale')
-        assert '2026-10-08T19:00'==page.locator('#open-at').input_value()
-        # Missing public stage time is the case that allows a manual fallback.
+        assert '2026-10-08 19:00'==page.locator('#open-at').input_value()
+        assert page.locator('#presale-choice').input_value()=='170194', 'A single official window is unambiguous'
+        # Missing official stage time blocks saving and starting; no manual fallback.
         worker.evaluate('() => { globalThis.__fixtureSales.data.preSalesInfo=[]; }')
         page.locator('#read-product').click()
-        page.wait_for_function('() => document.querySelector("#open-at").value==="" && !document.querySelector("#open-at").readOnly')
-        assert page.locator('#open-at').is_editable()
-        page.locator('#open-at').fill('2026-10-09T19:00')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="" && document.querySelector("#open-at").readOnly')
+        assert not page.locator('#open-at').is_editable()
+        assert page.locator('#save-task').is_disabled() and page.locator('#arm-task').is_disabled()
+        assert '没有官网时间时无法保存或启动' in page.locator('#open-at-hint').inner_text()
         page.locator('#task-stage').select_option('general')
         worker.evaluate('sales => { globalThis.__fixtureSales=sales; }', SALES)
         page.locator('#read-product').click()
-        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12T19:00"')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12 19:00"')
         page.locator('#task-stage').select_option('presale')
-        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-08T19:00"')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-08 19:00"')
+        # Multiple valid official windows require explicit selection; zero-duration
+        # placeholder entries must not silently become the chosen presale window.
+        worker.evaluate('''() => {
+            const first=globalThis.__fixtureSales.data.preSalesInfo[0];
+            globalThis.__fixtureSales.data.preSalesInfo=[
+                {...first,seq:170194},
+                {...first,seq:170195,buttonName:"Second membership",bookingOpenTime:"2026-10-09 20:00:00",bookingEndTime:"2026-10-09 23:59:00"},
+                {...first,seq:170196,preBookingKindCode:"I0005",bookingOpenTime:"2026-10-09 20:00:00",bookingEndTime:"2026-10-09 20:00:00"}
+            ];
+        }''')
+        # Switching products clears the earlier single-window selection.
+        page.locator('#product-url').fill('')
+        page.locator('#product-url').fill(URL)
+        page.wait_for_function('() => document.querySelectorAll("#presale-choice option").length===3 && document.querySelector("#presale-choice").value===""')
+        assert page.locator('#open-at').input_value()==''
+        assert page.locator('#save-task').is_disabled() and page.locator('#arm-task').is_disabled()
+        page.locator('#presale-choice').select_option('170195')
+        assert page.locator('#open-at').input_value()=='2026-10-09 19:00'
+        assert not page.locator('#save-task').is_disabled()
+        worker.evaluate('sales => { globalThis.__fixtureSales=sales; }', SALES)
+        page.locator('#read-product').click()
+        page.wait_for_function('() => document.querySelector("#presale-choice").value==="170194"')
         page.locator('#task-stage').select_option('general')
-        assert '2026-10-12T19:00'==page.locator('#open-at').input_value()
+        assert '2026-10-12 19:00'==page.locator('#open-at').input_value()
         cards=page.locator('.alternative-card')
         cards.nth(0).locator('.alt-date').fill('2026-10-30')
         cards.nth(0).locator('.alt-time').fill('19:00')
@@ -145,24 +187,33 @@ def run():
         state=call(page,'GET_STATE')
         assert len(state['tasks'])==1 and state['tasks'][0]['alternatives'][0]['people']==2
         assert state['tasks'][0].get('maxTotal') is None
+        assert state['tasks'][0]['openAtSource']=='official'
         assert [choice['date'] for choice in state['tasks'][0]['alternatives']]==['2026-10-30','2026-10-31']
         assert state['tasks'][0]['alternatives'][1]['zones']==['A区','B区']
+        page.locator('#task-stage').select_option('presale')
+        page.locator('#task-form button[type="submit"]').click()
+        page.wait_for_function('() => document.querySelector("#task-list").textContent.includes("先行开售")')
+        assert call(page,'GET_STATE')['tasks'][0]['preSaleSeq']=='170194'
+        page.locator('#task-stage').select_option('general')
+        page.locator('#task-form button[type="submit"]').click()
+        page.wait_for_function('() => document.querySelector("#task-list").textContent.includes("常规开售")')
         # Reopening a stored task must automatically refresh public stage metadata.
         reads=worker.evaluate('globalThis.__fixtureReads')
         page.reload()
-        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12T19:00" && document.querySelectorAll(".alt-package-select option").length===50')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12 19:00" && document.querySelectorAll(".alt-package-select option").length===50')
         assert worker.evaluate('globalThis.__fixtureReads')>reads
         page.locator('#task-stage').select_option('presale')
-        assert '2026-10-08T19:00'==page.locator('#open-at').input_value()
+        assert '2026-10-08 19:00'==page.locator('#open-at').input_value()
         page.locator('#task-stage').select_option('general')
-        # A user-entered countdown test time survives automatic metadata refresh.
-        page.locator('#open-at').fill('2099-10-12T19:00')
+        # A tampered display cache must not become the task's trusted sale time.
+        page.locator('#open-at').evaluate('(node) => { node.value="2099-10-12 19:00"; }')
         page.locator('#task-form button[type="submit"]').click()
-        page.wait_for_function('() => document.querySelector("#task-list").textContent.includes("2099-10-12")')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12 19:00"')
+        assert call(page,'GET_STATE')['tasks'][0]['openAt']=='2026-10-12T11:00:00.000Z'
         page.reload()
-        page.wait_for_function('() => document.querySelector("#open-at").value==="2099-10-12T19:00" && document.querySelectorAll(".alt-package-select option").length===50')
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12 19:00" && document.querySelectorAll(".alt-package-select option").length===50')
         page.locator('#task-stage').select_option('presale')
-        assert '2026-10-08T19:00'==page.locator('#open-at').input_value()
+        assert '2026-10-08 19:00'==page.locator('#open-at').input_value()
         page.locator('#task-stage').select_option('general')
         # The UI's save-and-arm button accepts a task without any price ceiling.
         with context.expect_page() as waiting:
@@ -171,7 +222,7 @@ def run():
         state=call(page,'GET_STATE')
         assert state['run']['status']=='armed' and state['run']['task'].get('maxTotal') is None
         assert state['run']['task']['openAt']=='2026-10-12T11:00:00.000Z'
-        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12T19:00"',timeout=3000)
+        page.wait_for_function('() => document.querySelector("#open-at").value==="2026-10-12 19:00"',timeout=3000)
         call(page,'STOP')
         waiting.value.close()
         page.evaluate('() => window.scrollTo(0,0)')
@@ -182,9 +233,13 @@ def run():
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(EVIDENCE/'options-mobile.png'),full_page=True)
         page.set_viewport_size({'width':1280,'height':980})
-        # Deterministic front-tab entry using real SW/claim/content script, fixture DOM only.
+        # A simulated official sales response supplies the timer target. The user
+        # cannot fill a test time; SAVE_TASK/ARM must re-read this official stub.
         task=state['tasks'][0]
-        task['openAt']=(datetime.now(timezone.utc)+timedelta(seconds=6)).isoformat()
+        opening=datetime.now(timezone.utc)+timedelta(seconds=8)
+        worker.evaluate('times => { globalThis.__fixtureSales.data.salesInfo.bookingOpenTime=times.open; globalThis.__fixtureSales.data.salesInfo.bookingEndTime=times.end; }', {
+            'open':(opening+timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S'),
+            'end':(opening+timedelta(days=1,hours=9)).strftime('%Y-%m-%d %H:%M:%S')})
         call(page,'SAVE_TASK',task=task)
         with context.expect_page() as created:
             call(page,'ARM',taskId=task['id'])
@@ -192,14 +247,17 @@ def run():
         product.goto(URL)
         product.wait_for_url(URL)
         product.bring_to_front()
-        product.wait_for_function('() => (window.entryClicks || 0)===1',timeout=12000)
+        product.wait_for_timeout(1000)
+        assert not entry_posts, 'Official entry POST must not happen before the official sale time'
+        assert product.evaluate('window.entryClicks || 0')==0, 'API entry must not click the old purchase button'
+        product.wait_for_url('https://tickets.interpark.com/gates/partner?**',timeout=15000)
         product.wait_for_timeout(1200)
-        assert product.evaluate('window.entryClicks')==1
-        state=call(page,'GET_STATE'); assert state['run']['entryClaimed'] and state['run']['entryClicked']
+        assert len(entry_posts)==1
+        state=call(page,'GET_STATE'); assert state['run']['entryClaimed'] and state['run']['entrySubmitted']
         assert state['run']['task'].get('maxTotal') is None
         assert 0 <= state['run']['latencyMs'] < 1500, state['run']
-        product.reload();product.wait_for_timeout(1200)
-        assert product.evaluate('window.entryClicks || 0')==0, 'Reload must never repeat the official entry'
+        product.goto(URL);product.wait_for_timeout(1200)
+        assert len(entry_posts)==1 and product.evaluate('window.entryClicks || 0')==0, 'Reload must never repeat the official entry API'
         call(page,'PAUSE');assert call(page,'GET_STATE')['run']['status']=='paused'
         call(page,'STOP');assert call(page,'GET_STATE')['run']['status']=='stopped'
         popup=context.new_page();popup.goto(f'chrome-extension://{extension_id}/popup.html')
@@ -210,7 +268,7 @@ def run():
         diagnostics=call(page,'EXPORT_DIAGNOSTICS')
         assert 'fixture@example.com' not in json.dumps(diagnostics) and '13800000000' not in json.dumps(diagnostics)
         assert not errors, errors
-        print(json.dumps({'browser':'Edge' if 'msedge' in EXECUTABLE.lower() else 'Chrome for Testing','extensionId':extension_id,'screens':['1280x980','390x844','popup360'],'latencyMs':state['run']['latencyMs'],'consoleErrors':errors,'consoleWarnings':warnings,'tests':['MV3 loads','profile CRUD','automatic URL metadata read24prices','missing stage time manual fallback','general/presale timezone','no price ceiling save/arm','purchase priority reorder/persistence','saved task automatic refresh','manual countdown time retained','one foreground entry','no reload repeat','pause/stop','popup','no overflow','diagnostics redaction'],'evidence':str(EVIDENCE)},ensure_ascii=True))
+        print(json.dumps({'browser':'Edge' if 'msedge' in EXECUTABLE.lower() else 'Chrome for Testing','extensionId':extension_id,'screens':['1280x980','390x844','popup360'],'latencyMs':state['run']['latencyMs'],'consoleErrors':errors,'consoleWarnings':warnings,'entryPosts':len(entry_posts),'tests':['MV3 loads','profile CRUD','automatic URL metadata read24prices','official time read-only','missing official time blocks save/arm','multiple presale explicit selection','zero-duration presale filtered','presale sequence persistence','general/presale timezone','no price ceiling save/arm','purchase priority reorder/persistence','saved task automatic refresh','tampered time ignored','official API entry not early','one API POST without button click','no reload repeat','pause/stop','popup','no overflow','diagnostics redaction'],'evidence':str(EVIDENCE)},ensure_ascii=True))
         context.close()
 
 if __name__=='__main__': run()

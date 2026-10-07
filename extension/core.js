@@ -22,15 +22,33 @@
     if (!/^\d{4,20}$/.test(p.phone) || !/^\+\d{1,4}$/.test(p.countryCode)) fail('请填写国家区号（例如 +86）和电话号码（不含区号）');
     return p;
   }
+  function selectOfficialOpening(product, stage, preSaleSeq = '') {
+    const validWindow = (openAt, endAt) => typeof openAt === 'string' && typeof endAt === 'string' && /(Z|[+-]\d{2}:\d{2})$/.test(openAt) && /(Z|[+-]\d{2}:\d{2})$/.test(endAt) && Number.isFinite(Date.parse(openAt)) && Number.isFinite(Date.parse(endAt)) && Date.parse(endAt) > Date.parse(openAt);
+    if (stage === 'general') {
+      const openAt = product?.opening?.general, endAt = product?.opening?.generalEnd;
+      if (!validWindow(openAt, endAt)) fail('官网未公布有效的普通开售时间窗口，请稍后重新读取');
+      return {openAt, endAt, preSaleSeq:''};
+    }
+    if (stage !== 'presale') fail('请选择普通开售或会员预售');
+    const choices = (product?.presaleChoices || []).filter(x => x && String(x.seq || '') && validWindow(x.openAt, x.endAt));
+    if (!choices.length) fail('官网未公布有效的预售时间窗口，请稍后重新读取');
+    const selected = preSaleSeq ? choices.find(x => String(x.seq) === String(preSaleSeq)) : choices.length === 1 ? choices[0] : null;
+    if (!selected) fail(preSaleSeq ? '所选预售窗口已变更，请重新读取并选择' : '官网有多个预售窗口，请选择对应的预售类型');
+    return {openAt:selected.openAt, endAt:selected.endAt, preSaleSeq:String(selected.seq)};
+  }
   function validateTask(input, profiles = [], now = Date.now(), allowImmediate = false) {
     const parsed = parseProductUrl(input?.productUrl);
     if (input.goodsCode && input.goodsCode !== parsed.goodsCode || input.placeCode && input.placeCode !== parsed.placeCode) fail('商品编号与链接不一致');
-    const task = {id: identifier(input.id) ? input.id : makeId(), name: text(input.name), productUrl: parsed.url, goodsCode: parsed.goodsCode, placeCode: parsed.placeCode, productName: text(input.productName), kind: input.kind, stage: input.stage, openAt: input.openAt, openAtSource: input.openAtSource === 'manual' ? 'manual' : 'official', quantity: Number(input.quantity), maxTotal: null, currency: input.currency || 'KRW', profileId: input.profileId};
+    if (input.openAtSource === 'manual') fail('已取消手动开售时间，请重新读取官网时间');
+    const task = {id: identifier(input.id) ? input.id : makeId(), name: text(input.name), productUrl: parsed.url, goodsCode: parsed.goodsCode, placeCode: parsed.placeCode, productName: text(input.productName), kind: input.kind, stage: input.stage, openAt: input.openAt, openAtSource:'official', officialEndAt:input.officialEndAt, officialCheckedAt:Number(input.officialCheckedAt) || 0, preSaleSeq:input.stage === 'presale' ? text(input.preSaleSeq,40) : '', quantity: Number(input.quantity), maxTotal: null, currency: input.currency || 'KRW', profileId: input.profileId};
     if (!task.name || !['package', 'ticket'].includes(task.kind) || !['general', 'presale'].includes(task.stage)) fail('请填写任务名称、商品类型和开售阶段');
     const stamp = Date.parse(task.openAt);
     if (!Number.isFinite(stamp) || !/(Z|[+-]\d{2}:\d{2})$/.test(task.openAt)) fail('开票时间必须包含时区');
     if (!allowImmediate && stamp <= now) fail('开票时间已过，请使用“立即开始”');
     task.openAt = new Date(stamp).toISOString();
+    const endStamp = Date.parse(task.officialEndAt);
+    if (!Number.isFinite(endStamp) || !/(Z|[+-]\d{2}:\d{2})$/.test(task.officialEndAt) || endStamp <= stamp) fail('官网开售结束时间缺失或无效，请重新读取');
+    task.officialEndAt = new Date(endStamp).toISOString();
     if (!Number.isSafeInteger(task.quantity) || task.quantity < 1 || task.quantity > 20) fail('数量应为 1–20 的整数，并受网站实际限购限制');
     if (task.currency !== 'KRW') fail('仅支持韩元（KRW）订单');
     if (!profiles.some(p => p.id === task.profileId)) fail('请选择已保存的联系人');
@@ -88,9 +106,9 @@
   function redactedRun(run) {
     if (!run) return null;
     const safe = {};
-    for (const key of ['id','taskId','status','step','reason','openAt','entryClaimed','entryClicked','triggerAt','latencyMs','updatedAt']) safe[key] = run[key];
+    for (const key of ['id','taskId','status','step','reason','openAt','entryClaimed','entryAttempted','entrySubmitted','apiDispatched','triggerAt','latencyMs','updatedAt']) safe[key] = run[key];
     safe.events = (run.events || []).map(e=>({at:e.at,step:e.step,reason:e.reason}));
     return safe;
   }
-  Object.assign(H, {parseProductUrl, normalizeProfile, validateTask, classifyTrigger, checkOrder, pickAlternative, formatTimes, redactedRun, makeId});
+  Object.assign(H, {parseProductUrl, normalizeProfile, selectOfficialOpening, validateTask, classifyTrigger, checkOrder, pickAlternative, formatTimes, redactedRun, makeId});
 })(globalThis);

@@ -25,7 +25,7 @@ function taskInput(overrides = {}) {
   return {
     id: 'task-test', name: '普通票测试', productName: 'JEONGHAN X JOSHUA',
     productUrl: ticketUrl, goodsCode: '26013793', placeCode: '26001167',
-    kind: 'ticket', stage: 'general', openAt: new Date(OPEN).toISOString(),
+    kind: 'ticket', stage: 'general', openAt: new Date(OPEN).toISOString(), officialEndAt: '2026-10-31T02:00:59.000Z',
     quantity: 2, maxTotal: null, currency: 'KRW', profileId: 'profile-test',
     alternatives: [{date: '2026-10-30', time: '19:00', seatGrade: '1', priceGrade: 'U1', people: 1, zones: ['A', 'B']}],
     ...overrides
@@ -34,6 +34,14 @@ function taskInput(overrides = {}) {
 
 function ticketTask(overrides = {}) {
   return H.validateTask(taskInput(overrides), profiles, NOW);
+}
+
+function officialProduct(overrides = {}) {
+  return {
+    opening: {general: new Date(OPEN).toISOString(), generalEnd: '2026-10-31T02:00:59.000Z'},
+    presaleChoices: [{seq: '170194', label: 'Membership Member', openAt: '2026-10-08T11:00:00.000Z', endAt: '2026-10-08T14:59:00.000Z'}],
+    ...overrides
+  };
 }
 
 function packageTask(overrides = {}) {
@@ -100,6 +108,48 @@ test('过去开售需明确立即模式；无时区时间不能按本机时区�
   assert.doesNotThrow(() => H.validateTask(past, profiles, NOW, true));
   assert.throws(() => ticketTask({openAt: '2026-10-12T19:00:00'}));
   assert.throws(() => ticketTask({openAt: 'not-a-date'}));
+});
+
+test('任务时间来源只允许官网；旧手动来源不可继续沿用', () => {
+  assert.equal(ticketTask().openAtSource, 'official');
+  assert.equal(ticketTask({stage: 'presale', openAtSource: 'official', preSaleSeq: 170194}).preSaleSeq, '170194');
+  assert.throws(() => ticketTask({openAtSource: 'manual'}));
+  assert.throws(() => ticketTask({officialEndAt: undefined}));
+  assert.throws(() => ticketTask({officialEndAt: new Date(OPEN).toISOString()}));
+});
+
+test('官网普通开售与唯一有效预售分别选择正确的时间和预售编号', () => {
+  const product = officialProduct();
+  const regular = H.selectOfficialOpening(product, 'general');
+  assert.equal(regular.openAt, product.opening.general);
+  assert.equal(regular.endAt, product.opening.generalEnd);
+  assert.equal(regular.preSaleSeq, '');
+  const presale = H.selectOfficialOpening(product, 'presale');
+  assert.equal(presale.openAt, product.presaleChoices[0].openAt);
+  assert.equal(presale.endAt, product.presaleChoices[0].endAt);
+  assert.equal(presale.preSaleSeq, '170194');
+});
+
+test('多个预售不能默认选择第一项；必须明确匹配官网预售编号', () => {
+  const product = officialProduct();
+  product.presaleChoices.push({seq: '170195', label: 'Second membership', openAt: '2026-10-09T11:00:00.000Z', endAt: '2026-10-09T14:59:00.000Z'});
+  assert.throws(() => H.selectOfficialOpening(product, 'presale'));
+  assert.throws(() => H.selectOfficialOpening(product, 'presale', 'not-official'));
+  const selected = H.selectOfficialOpening(product, 'presale', '170195');
+  assert.equal(selected.openAt, '2026-10-09T11:00:00.000Z');
+  assert.equal(selected.preSaleSeq, '170195');
+});
+
+test('缺少或无效的官网时间不能退回商品日期、手填时间或缓存', () => {
+  const product = officialProduct();
+  for (const general of ['', undefined, 'not-a-date', '2026-10-12T19:00:00']) {
+    assert.throws(() => H.selectOfficialOpening({...product, opening: {general}, openAt: new Date(OPEN).toISOString()}, 'general'));
+  }
+  assert.throws(() => H.selectOfficialOpening({...product, presaleChoices: []}, 'presale'));
+  assert.throws(() => H.selectOfficialOpening({...product, presaleChoices: [{seq: '1', openAt: 'not-a-date'}]}, 'presale'));
+  for (const generalEnd of ['', undefined, new Date(OPEN).toISOString(), new Date(OPEN - 1).toISOString()]) {
+    assert.throws(() => H.selectOfficialOpening({...product, opening: {...product.opening, generalEnd}}, 'general'));
+  }
 });
 
 test('不可能的演出日期和时刻不能保存为场次', () => {

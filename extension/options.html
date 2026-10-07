@@ -35,15 +35,16 @@
           <div class="form-grid">
             <label class="field">商品类型<select id="task-kind"><option value="package">Play＆Stay 酒店套餐</option><option value="ticket">普通公演票</option></select></label>
             <label class="field">开售阶段<select id="task-stage"><option value="general">常规开售</option><option value="presale">会员 / 先行开售</option></select></label>
-            <label class="field full">开售时间（自动读取，北京时间）<input id="open-at" type="datetime-local" step="60" required><span id="open-at-hint" class="hint">自动按开售阶段填入。官网未公布或测试倒计时时，可手动设置。</span></label>
+            <label id="presale-choice-field" class="field full" hidden>会员 / 先行开售窗口<select id="presale-choice"><option value="">请选择官网公布的预售窗口</option></select><span class="hint">有多个窗口时，请选择与你的购票资格对应的窗口。</span></label>
+            <label class="field full">官网开售时间（北京时间）<input id="open-at" type="text" readonly aria-readonly="true" placeholder="等待官网公布所选阶段的开售时间"><span id="open-at-hint" class="hint">只使用官网时间。保存和启动时会再次核对；官网未公布时无法保存或启动。</span></label>
             <label class="field full"><span id="quantity-label">套餐数量（份）</span><input id="quantity" type="number" min="1" max="20" step="1" value="1" required><span id="quantity-hint" class="hint">每份人数在下方购票选择中填写。</span></label>
             <label class="field full">联系人<select id="task-profile" required><option value="">请选择已保存的联系人</option></select><span class="hint">联系方式保存在本机。可在上方「联系人」中添加。</span></label>
           </div>
           <div class="section-heading alternatives-heading"><div><h3>购票优先顺序</h3><p class="hint">第一选择最想买，买不到再看第二选择。每个选择填写场次和酒店 / 票档；演出时间使用韩国时间。</p></div><button id="add-alternative" type="button" class="button secondary small">添加购票选择</button></div>
           <div id="alternatives" class="alternatives"></div>
           <div class="notice neutral compact">不设价格上限，按上述顺序保存购票偏好。当前进入后的选场次、选票和下单仍由你操作；座区及酒店套餐的实际选择以售票页为准。</div>
-          <div class="form-actions"><button type="submit" class="button">保存任务</button><button id="arm-task" type="button" class="button secondary">保存并值守</button><button id="start-now" type="button" class="button" hidden>立即开始</button><button id="delete-task" type="button" class="button danger quiet" hidden>删除任务</button></div>
-          <p id="start-hint" class="hint">到达开售时间后在当前浏览器前台继续。登录、验证码和支付均需你完成。</p>
+          <div class="form-actions"><button id="save-task" type="submit" class="button">保存任务</button><button id="arm-task" type="button" class="button secondary">保存并值守</button><button id="start-now" type="button" class="button" hidden>立即开始</button><button id="delete-task" type="button" class="button danger quiet" hidden>删除任务</button></div>
+          <p id="start-hint" class="hint">到官网开售时间后请求官方入场接口。请保持浏览器前台；登录、验证码和支付均需你完成。</p>
         </form>
       </section>
     </section>
@@ -60,7 +61,7 @@
         </div><div class="form-actions"><button type="submit" class="button">保存联系人</button><button id="delete-profile" type="button" class="button danger quiet" hidden>删除联系人</button></div></form>
       </section>
     </section>
-    <section class="panel capability-panel"><div class="section-heading"><h2>适配状态</h2><span class="badge caution">售票后段未实测</span></div><p>商品信息和预约入口已核对。场次、选座、订单及付款页面需要在正常售票流程中验证；遇到不支持的页面会暂停，等待人工接管。</p><div id="capabilities" class="capability-list"></div><div id="run-summary" class="run-summary" hidden></div></section>
+    <section class="panel capability-panel"><div class="section-heading"><h2>适配状态</h2><span class="badge caution">售票后段未实测</span></div><p>开售时间只从官网读取，到时请求官方入场接口并沿官方验证与排队继续。接口入场仍需网站验证；场次、选座、锁座、订单及付款尚未完成真实适配，遇到不支持的步骤会暂停，等待人工接管。</p><div id="capabilities" class="capability-list"></div><div id="run-summary" class="run-summary" hidden></div></section>
     <footer class="settings-footer"><span>请保持 Chrome 或 Edge 前台运行。</span><div class="footer-actions"><button id="export-diagnostics" type="button" class="text-button">导出诊断</button><button id="delete-all" type="button" class="text-button danger">删除全部本机数据</button></div></footer>
   </main>
 </body>

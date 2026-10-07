@@ -33,27 +33,28 @@
     const task = run && !finalStatuses.has(run.status) ? state.tasks.find((item) => item.id === run.taskId) || run.task : selectedTask();
     const active = Boolean(run && !finalStatuses.has(run.status));
     $('run-detail').hidden = !task;
-    const opened = task && new Date(task.openAt).getTime() <= Date.now();
+    const officialTime = task?.openAtSource === 'official' && Number.isFinite(Date.parse(task.openAt)) && Date.parse(task.officialEndAt) > Date.parse(task.openAt);
+    const opened = officialTime && new Date(task.openAt).getTime() <= Date.now();
     $('run-status').textContent = run && (active || run.taskId === task?.id) ? labels[run.status] || '任务状态' : '尚未开始';
     $('run-status').className = `badge${run?.status === 'payment' ? ' success' : run?.status === 'waiting-manual' || run?.status === 'missed' ? ' caution' : ''}`;
     $('run-detail').textContent = active || run?.taskId === task?.id ? [run?.step, run?.reason].filter(Boolean).join(' · ') || '等待任务状态更新。' : '保存任务后，在这里开始值守。';
     $('popup-arm').hidden = active || Boolean(opened);
     $('popup-immediate').hidden = active || !opened;
-    $('popup-arm').disabled = !task || actionPending;
-    $('popup-immediate').disabled = !task || actionPending;
+    $('popup-arm').disabled = !officialTime || actionPending;
+    $('popup-immediate').disabled = !officialTime || actionPending;
     $('popup-pause').hidden = !active || run.status === 'paused' || run.status === 'waiting-manual';
     $('popup-resume').hidden = !active || !['paused', 'waiting-manual'].includes(run.status);
     $('popup-stop').hidden = !active;
     for (const id of ['popup-pause', 'popup-resume', 'popup-stop']) $(id).disabled = actionPending;
     if (!task) { $('countdown-label').textContent = '距离开售'; $('countdown').textContent = '—'; $('sale-time').textContent = '先在设置中添加商品和联系人。'; return; }
     const diff = new Date(task.openAt).getTime() - Date.now();
-    if (!Number.isFinite(diff)) { $('countdown').textContent = '—'; $('sale-time').textContent = '请在设置中补全开售时间。'; return; }
+    if (!officialTime || !Number.isFinite(diff)) { $('countdown').textContent = '—'; $('sale-time').textContent = '请在设置中重新读取官网开售时间；官网未公布时无法启动。'; return; }
     const seconds = Math.max(0, Math.ceil(diff / 1000));
     const days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60), remainder = seconds % 60;
     $('countdown-label').textContent = diff > 0 ? '距离开售' : '已开售';
     $('countdown').textContent = diff > 0 ? `${days ? `${days}天 ` : ''}${[hours, minutes, remainder].map((value) => String(value).padStart(2, '0')).join(':')}` : run?.status === 'payment' ? '停在付款页' : '00:00:00';
-    $('sale-time').textContent = `北京 ${formatTime(task.openAt, 'Asia/Shanghai')} / 韩国 ${formatTime(task.openAt, 'Asia/Seoul')}`;
-    if (opened && !active && run?.status !== 'payment') $('run-detail').textContent = '立即启动官方入口；当前选场次、选票和订单需由你继续操作。';
+    $('sale-time').textContent = `官网时间 · 北京 ${formatTime(task.openAt, 'Asia/Shanghai')} / 韩国 ${formatTime(task.openAt, 'Asia/Seoul')}`;
+    if (opened && !active && run?.status !== 'payment') $('run-detail').textContent = '官网显示已开售。启动时会再次核对并请求官方入场接口；选场次、选座和订单由你继续操作。';
   }
   async function refresh() {
     if (pending) return;

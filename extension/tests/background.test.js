@@ -19,11 +19,11 @@ function profile() {
 }
 
 function task(id = 'task-1', openAt = baseTime) {
-  return { id, name: 'fixture task', productUrl, goodsCode: '26013792', placeCode: '26001167', productName: '', kind: 'package', stage: 'general', openAt: new Date(openAt).toISOString(), quantity: 1, maxTotal: 2000000, currency: 'KRW', profileId: 'profile-1', alternatives: [{ date: '2026-10-30', time: '19:00', packageLabel: 'INSPIRE Entertainment Resort (2 People)', seatGrade: '1', priceGrade: 'U1', people: 2, zones: [] }] };
+  return { id, name: 'fixture task', productUrl, goodsCode: '26013792', placeCode: '26001167', productName: '', kind: 'package', stage: 'general', openAt: new Date(openAt).toISOString(), openAtSource: 'official', officialEndAt: '2026-10-31T02:00:59.000Z', quantity: 1, maxTotal: 2000000, currency: 'KRW', profileId: 'profile-1', alternatives: [{ date: '2026-10-30', time: '19:00', packageLabel: 'INSPIRE Entertainment Resort (2 People)', seatGrade: '1', priceGrade: 'U1', people: 2, zones: [] }] };
 }
 
 function armedState(overrides = {}) {
-  return { profiles: [profile()], tasks: [task()], run: { id: 'run-1', taskId: 'task-1', tabId: 23, status: 'armed', step: '等待开票', reason: '', openAt: new Date(baseTime).toISOString(), entryClaimed: false, entryClicked: false, events: [], updatedAt: baseTime, heartbeatAt: 0, ...overrides } };
+  return { profiles: [profile()], tasks: [task()], run: { id: 'run-1', taskId: 'task-1', tabId: 23, status: 'armed', step: '等待开票', reason: '', openAt: new Date(baseTime).toISOString(), officialOpenAt: new Date(baseTime).toISOString(), officialEndAt: '2026-10-31T02:00:59.000Z', entryClaimed: false, entryClicked: false, entryAttempted: false, entrySubmitted: false, events: [], updatedAt: baseTime, heartbeatAt: 0, ...overrides } };
 }
 
 function event() {
@@ -38,10 +38,12 @@ function harness(initial = armedState(), options = {}) {
     static now() { return clock.now; }
   }
   const database = initial === null ? {} : { nolHelperState: copy(initial) };
-  const calls = { fetch: [], writes: [], messages: [], clearAlarms: [], createAlarms: [], createTabs: [], accessLevels: [], options: 0 };
+  const calls = { fetch: [], writes: [], messages: [], clearAlarms: [], createAlarms: [], createTabs: [], accessLevels: [], scripts: [], options: 0 };
   const tabs = new Map([[23, { id: 23, windowId: 5, active: options.active !== false, url: productUrl }]]);
   let nextTab = 24;
   let nextId = 1;
+  let resolveScriptStarted;
+  const scriptStarted = new Promise((resolve) => { resolveScriptStarted = resolve; });
   const chrome = {
     storage: { local: {
       async setAccessLevel(value) { calls.accessLevels.push(copy(value)); },
@@ -65,6 +67,15 @@ function harness(initial = armedState(), options = {}) {
       onRemoved: event(), onUpdated: event()
     },
     windows: { async get(id) { return { id, focused: options.focused !== false }; } },
+    scripting: {
+      async executeScript(value) {
+        calls.scripts.push(value);
+        resolveScriptStarted(true);
+        if (options.scriptBarrier && calls.scripts.length === 1) await options.scriptBarrier;
+        if (options.scriptError) throw new Error(options.scriptError);
+        return [{result: copy(options.scriptResult === undefined ? {submitted: true, code: 'ENTRY_REDIRECTING'} : options.scriptResult)}];
+      }
+    },
     alarms: {
       async clear(name) { calls.clearAlarms.push(name); return true; },
       async create(name, value) { calls.createAlarms.push({ name, value: copy(value) }); },
@@ -80,7 +91,10 @@ function harness(initial = armedState(), options = {}) {
         if (options.productBarrier) await options.productBarrier;
         return { ok: true, status: 200, async text() { return options.productHtml === undefined ? html : options.productHtml; } };
       }
-      if (String(url).startsWith('https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?')) return { ok: true, status: 200, async json() { return copy(capturedSales); } };
+      if (String(url).startsWith('https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?')) {
+        if (options.salesError) throw new Error(options.salesError);
+        return {ok: options.salesHTTP === undefined || options.salesHTTP === 200, status: options.salesHTTP || 200, async json() { return copy(options.sales === undefined ? capturedSales : options.sales); }};
+      }
       throw new Error('Unexpected network request: ' + url);
     }
   });
@@ -95,7 +109,7 @@ function harness(initial = armedState(), options = {}) {
       try { chrome.runtime.onMessage.listeners[0](copy(message), copy(sender), resolve); } catch (error) { reject(error); }
     });
   }
-  return { chrome, calls, database, clock, ui, site, send, state: () => copy(database.nolHelperState) };
+  return { chrome, calls, database, clock, ui, site, send, scriptStarted, state: () => copy(database.nolHelperState) };
 }
 
 test('settings-only messages require the actual extension origin, while the assigned site gets only task context', async () => {
@@ -183,7 +197,7 @@ test('browser startup pauses the saved run and clears alarms without replaying i
   const state = await h.send({ type: 'GET_STATE' });
   assert.equal(state.data.run.status, 'paused');
   assert.equal(state.data.run.entryClaimed, false);
-  assert.deepEqual(h.calls.clearAlarms, ['warm:run-1', 'deadline:run-1']);
+  assert.deepEqual(h.calls.clearAlarms, ['warm:run-1', 'deadline:run-1', 'sale:run-1']);
   assert.equal(h.calls.createTabs.length, 0);
   assert.equal((await h.send({ type: 'CLAIM_ENTRY', runId: 'run-1', visible: true, lastTick: baseTime }, h.site)).ok, false);
 });
@@ -207,7 +221,11 @@ test('public product reads use only captured public data, omit credentials and n
   assert.equal(response.data.goodsCode, '26013792');
   assert.equal(response.data.prices.length, 24);
   assert.equal(response.data.opening.general, '2026-10-12T11:00:00.000Z');
-  assert.equal(response.data.opening.presale, '2026-10-08T11:00:00.000Z');
+  assert.equal(response.data.opening.generalEnd, '2026-10-31T02:00:59.000Z');
+  assert.equal(response.data.presaleChoices.length, 1);
+  assert.equal(response.data.presaleChoices[0].seq, '170194');
+  assert.equal(response.data.presaleChoices[0].openAt, '2026-10-08T11:00:00.000Z');
+  assert.equal(response.data.presaleChoices[0].endAt, '2026-10-08T14:59:00.000Z');
   const serialized = JSON.stringify(response.data);
   for (const secret of [profile().email, profile().phone, profile().label, profile().lastName]) assert.equal(serialized.includes(secret), false);
   assert.deepEqual(h.state(), before);
@@ -248,4 +266,218 @@ test('a slow public product read never holds the serialized opening-time entry c
   assert.equal(claimBeforeRead.ok, true, 'public network reads must not block the entry queue');
   assert.equal(product.ok, true);
   assert.equal(h.state().run.entryClaimed, true);
+});
+
+test('SAVE_TASK ignores forged manual time and saves freshly read official sales bounds', async () => {
+  const h = harness(armedState({status: 'stopped'}));
+  const forged = {...task(), openAt: '2099-01-01T00:00:00.000Z', openAtSource: 'manual', officialEndAt: '2099-12-31T00:00:00.000Z', metadata: {opening: {general: '2099-01-01T00:00:00.000Z'}}};
+  const saved = await h.send({type: 'SAVE_TASK', task: forged});
+  assert.equal(saved.ok, true);
+  assert.equal(saved.data.openAt, '2026-10-12T11:00:00.000Z');
+  assert.equal(saved.data.officialEndAt, '2026-10-31T02:00:59.000Z');
+  assert.equal(saved.data.openAtSource, 'official');
+  assert.equal(h.state().tasks[0].openAt, saved.data.openAt);
+  assert.equal(h.calls.fetch.length, 2);
+});
+
+test('ARM rereads official sales instead of using an old manual task or previously saved time', async () => {
+  const initial = armedState({status: 'stopped'});
+  initial.tasks[0].openAtSource = 'manual';
+  initial.tasks[0].openAt = '2099-01-01T00:00:00.000Z';
+  const sales = copy(capturedSales);
+  sales.data.salesInfo.bookingOpenTime = '2026-10-13 20:00:00';
+  const h = harness(initial, {sales});
+  const armed = await h.send({type: 'ARM', taskId: 'task-1'});
+  assert.equal(armed.ok, true);
+  assert.equal(armed.data.openAt, '2026-10-13T11:00:00.000Z');
+  assert.equal(h.state().tasks[0].openAt, '2026-10-13T11:00:00.000Z');
+  assert.equal(h.state().tasks[0].openAtSource, 'official');
+  assert.equal(h.calls.fetch.length, 2);
+  assert.equal(h.calls.createTabs.length, 1);
+});
+
+test('multiple presales require an explicit official seq at save and at arm', async () => {
+  const sales = copy(capturedSales);
+  sales.data.preSalesInfo.push({...sales.data.preSalesInfo[0], seq: 170195, buttonName: 'Second membership', bookingOpenTime: '2026-10-09 20:00:00', bookingEndTime: '2026-10-09 23:59:00'});
+  for (const preSaleSeq of ['', 'not-official']) {
+    const initial = armedState({status: 'stopped'});
+    initial.tasks[0] = {...initial.tasks[0], stage: 'presale', preSaleSeq};
+    const h = harness(initial, {sales});
+    assert.equal((await h.send({type: 'SAVE_TASK', task: initial.tasks[0]})).ok, false);
+    assert.equal((await h.send({type: 'ARM', taskId: 'task-1'})).ok, false);
+    assert.equal(h.calls.createTabs.length, 0);
+  }
+  const initial = armedState({status: 'stopped'});
+  initial.tasks[0] = {...initial.tasks[0], stage: 'presale', preSaleSeq: '170195'};
+  const h = harness(initial, {sales});
+  const saved = await h.send({type: 'SAVE_TASK', task: initial.tasks[0]});
+  assert.equal(saved.ok, true);
+  assert.equal(saved.data.preSaleSeq, '170195');
+  assert.equal(saved.data.openAt, '2026-10-09T11:00:00.000Z');
+  const armed = await h.send({type: 'ARM', taskId: 'task-1'});
+  assert.equal(armed.ok, true);
+  assert.equal(armed.data.openAt, saved.data.openAt);
+});
+
+test('sales API errors or missing official times never enable a task through fallback data', async () => {
+  const missingOpen = copy(capturedSales);
+  delete missingOpen.data.salesInfo.bookingOpenTime;
+  const missingEnd = copy(capturedSales);
+  delete missingEnd.data.salesInfo.bookingEndTime;
+  for (const options of [{salesHTTP: 503}, {salesError: 'offline'}, {sales: missingOpen}, {sales: missingEnd}]) {
+    const initial = armedState({status: 'stopped'});
+    const before = copy(initial.tasks);
+    const h = harness(initial, options);
+    assert.equal((await h.send({type: 'SAVE_TASK', task: {...task(), openAt: '2099-01-01T00:00:00.000Z'}})).ok, false);
+    assert.equal((await h.send({type: 'ARM', taskId: 'task-1'})).ok, false);
+    assert.equal(h.calls.createTabs.length, 0);
+    assert.equal(h.calls.scripts.length, 0);
+    assert.equal(h.state().run.status, 'stopped');
+    assert.equal(h.state().tasks[0].openAt, before[0].openAt);
+  }
+});
+
+test('an already open official sale needs immediate mode and an ended sale cannot arm', async () => {
+  const open = Date.parse('2026-10-12T11:00:00.000Z');
+  const h = harness(armedState({status: 'stopped'}), {now: open + 1000});
+  assert.equal((await h.send({type: 'ARM', taskId: 'task-1'})).ok, false);
+  assert.equal(h.calls.createTabs.length, 0);
+  assert.equal((await h.send({type: 'ARM', taskId: 'task-1', immediate: true})).ok, true);
+  const expired = harness(armedState({status: 'stopped'}), {now: Date.parse('2026-10-31T02:01:00.000Z')});
+  assert.equal((await expired.send({type: 'ARM', taskId: 'task-1', immediate: true})).ok, false);
+  assert.equal(expired.calls.createTabs.length, 0);
+});
+
+test('the claimed official API entry submits once and stores no returned credentials', async () => {
+  const token = 'PRIVATE_ENTRY_TOKEN_SENTINEL';
+  const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptResult: {submitted: true, code: 'ENTRY_REDIRECTING', token, partner_token: token}});
+  const request = {type: 'API_ENTRY', runId: 'run-1'};
+  const responses = await Promise.all([h.send(request, h.site), h.send(request, h.site)]);
+  assert.equal(responses.filter((response) => response.ok).length, 1);
+  assert.equal(h.calls.scripts.length, 1);
+  assert.equal(h.calls.scripts[0].world, 'MAIN');
+  assert.equal(h.calls.scripts[0].target.tabId, 23);
+  assert.equal(h.state().run.entryAttempted, true);
+  assert.equal(h.state().run.entrySubmitted, true);
+  assert.equal(JSON.stringify(h.state()).includes(token), false);
+  assert.equal(JSON.stringify(responses).includes(token), false);
+  assert.equal((await h.send(request, h.site)).ok, false);
+  assert.equal(h.calls.scripts.length, 1);
+});
+
+test('API entry rejects wrong callers, unclaimed runs, paused tasks, early times and mismatched products', async () => {
+  for (const [changes, options, senderChanges, requestChanges] of [
+    [{entryClaimed: false}, {}, {}, {}],
+    [{status: 'paused', entryClaimed: true}, {}, {}, {}],
+    [{status: 'stopped', entryClaimed: true}, {}, {}, {}],
+    [{entryClaimed: true, status: 'running'}, {now: baseTime - 1}, {}, {}],
+    [{entryClaimed: true, status: 'running'}, {}, {url: productUrl.replace('26013792', '26013793')}, {}],
+    [{entryClaimed: true, status: 'running'}, {}, {frameId: 1}, {}],
+    [{entryClaimed: true, status: 'running'}, {}, {}, {runId: 'not-the-run'}]
+  ]) {
+    const h = harness(armedState(changes), options);
+    const reply = await h.send({type: 'API_ENTRY', runId: 'run-1', ...requestChanges}, {...h.site, ...senderChanges});
+    assert.equal(reply.ok, false, JSON.stringify({changes, options, senderChanges, requestChanges}));
+    assert.equal(h.calls.scripts.length, 0);
+  }
+  const h = harness(armedState({status: 'running', entryClaimed: true}));
+  assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.ui)).ok, false);
+  assert.equal(h.calls.scripts.length, 0);
+});
+
+test('an unknown API result or scripting failure pauses for takeover without repeating the attempt', async () => {
+  for (const options of [{scriptResult: {submitted: true, code: 'ENTRY_UNKNOWN_RESPONSE'}}, {scriptError: 'script disconnected'}]) {
+    const h = harness(armedState({status: 'running', entryClaimed: true}), options);
+    await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+    assert.equal(h.state().run.status, 'waiting-manual');
+    assert.equal(h.state().run.apiDispatched, true);
+    assert.equal(h.state().run.entryAttempted, !options.scriptError);
+    assert.equal(h.state().run.entrySubmitted, false);
+    assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site)).ok, false);
+    assert.equal(h.calls.scripts.length, 1);
+  }
+});
+
+test('pause and stop settle promptly while API entry is pending and discard its late success', async () => {
+  for (const type of ['PAUSE', 'STOP']) {
+    let releaseScript;
+    const scriptBarrier = new Promise((resolve) => { releaseScript = resolve; });
+    const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptBarrier});
+    const entering = h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+    let startTimer;
+    const started = await Promise.race([h.scriptStarted, new Promise((resolve) => { startTimer = setTimeout(() => resolve(false), 200); })]);
+    clearTimeout(startTimer);
+    if (!started) {
+      releaseScript();
+      await entering;
+      assert.fail('official script entry did not start');
+    }
+    let timer;
+    const stopped = await Promise.race([
+      h.send({type}, h.ui),
+      new Promise((resolve) => { timer = setTimeout(() => resolve({blocked: true}), 200); })
+    ]);
+    clearTimeout(timer);
+    releaseScript();
+    await entering;
+    assert.equal(stopped.ok, true, type + ' must not wait behind pending page fetch');
+    assert.equal(h.state().run.status, type === 'PAUSE' ? 'paused' : 'stopped');
+    assert.equal(h.state().run.entrySubmitted, false);
+  }
+});
+
+test('a slow SAVE_TASK official refresh does not hold an unrelated opening-time claim', async () => {
+  let releaseProduct;
+  const productBarrier = new Promise((resolve) => { releaseProduct = resolve; });
+  const h = harness(armedState(), {productBarrier});
+  const saving = h.send({type: 'SAVE_TASK', task: task('task-2')});
+  const claiming = h.send({type: 'CLAIM_ENTRY', runId: 'run-1', visible: true, lastTick: baseTime}, h.site);
+  let timer;
+  const claimBeforeRead = await Promise.race([claiming, new Promise((resolve) => { timer = setTimeout(() => resolve({blocked: true}), 200); })]);
+  clearTimeout(timer);
+  releaseProduct();
+  await saving;
+  await claiming;
+  assert.equal(claimBeforeRead.ok, true);
+  assert.equal(h.state().run.entryClaimed, true);
+});
+
+test('periodic official refresh moves an armed countdown when the sale is postponed', async () => {
+  const options = {sales: copy(capturedSales)};
+  const h = harness(armedState({status: 'stopped'}), options);
+  const armed = await h.send({type: 'ARM', taskId: 'task-1'});
+  assert.equal(armed.ok, true);
+  options.sales.data.salesInfo.bookingOpenTime = '2026-10-13 20:00:00';
+  await h.chrome.alarms.onAlarm.emit({name: 'sale:' + armed.data.id});
+  assert.equal(h.state().run.status, 'armed');
+  assert.equal(h.state().run.openAt, '2026-10-13T11:00:00.000Z');
+  assert.equal(h.state().run.officialOpenAt, '2026-10-13T11:00:00.000Z');
+  assert.equal(h.state().tasks[0].openAt, '2026-10-13T11:00:00.000Z');
+  assert.ok(h.calls.createAlarms.some((alarm) => alarm.name === 'deadline:' + armed.data.id && alarm.value.when === Date.parse('2026-10-13T11:00:00.000Z') + 6000));
+});
+
+test('immediate mode retains official sale bounds so an unchanged refresh does not pause it', async () => {
+  const now = Date.parse('2026-10-12T11:00:01.000Z');
+  const h = harness(armedState({status: 'stopped'}), {now});
+  const armed = await h.send({type: 'ARM', taskId: 'task-1', immediate: true});
+  assert.equal(armed.ok, true);
+  const triggerAt = armed.data.openAt;
+  assert.equal(h.state().run.officialOpenAt, '2026-10-12T11:00:00.000Z');
+  await h.chrome.alarms.onAlarm.emit({name: 'sale:' + armed.data.id});
+  assert.equal(h.state().run.status, 'armed');
+  assert.equal(h.state().run.openAt, triggerAt);
+  assert.equal(h.state().run.officialEndAt, '2026-10-31T02:00:59.000Z');
+});
+
+test('a failed periodic official refresh pauses the armed run rather than retaining a stale countdown', async () => {
+  const options = {sales: copy(capturedSales)};
+  const h = harness(armedState({status: 'stopped'}), options);
+  const armed = await h.send({type: 'ARM', taskId: 'task-1'});
+  assert.equal(armed.ok, true);
+  options.salesHTTP = 503;
+  await h.chrome.alarms.onAlarm.emit({name: 'sale:' + armed.data.id});
+  assert.equal(h.state().run.status, 'paused');
+  assert.equal(h.state().run.entryClaimed, false);
+  assert.equal(h.calls.scripts.length, 0);
+  assert.ok(h.calls.clearAlarms.includes('sale:' + armed.data.id));
 });

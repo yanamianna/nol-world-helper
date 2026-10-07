@@ -13,7 +13,7 @@
   let productReadTimer = null;
   let productReadSequence = 0;
   let openingStatus = 'idle';
-  let manualOpening = false;
+  let selectedPreSaleSeq = '';
 
   async function request(type, payload = {}) {
     const result = await chrome.runtime.sendMessage({ type, ...payload });
@@ -33,19 +33,45 @@
     if (className) node.className = className;
     return node;
   }
-  function localTime(iso, zone = 'Asia/Shanghai', input = false) {
+  function localTime(iso, zone = 'Asia/Shanghai') {
     const date = new Date(iso);
     if (!Number.isFinite(date.getTime())) return '';
     const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
     const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day}${input ? 'T' : ' '}${values.hour}:${values.minute}`;
+    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+  }
+  function presaleChoices() {
+    return (Array.isArray(metadata?.presaleChoices) ? metadata.presaleChoices : []).filter((choice) =>
+      String(choice.seq ?? '') && Number.isFinite(Date.parse(choice.openAt)) && Date.parse(choice.endAt) > Date.parse(choice.openAt));
   }
   function openingIso() {
-    const value = $('open-at').value;
-    return value ? new Date(`${value}${value.length === 16 ? ':00' : ''}+08:00`).toISOString() : '';
+    if (openingStatus !== 'official') return '';
+    const choice = $('task-stage').value === 'presale' ? presaleChoices().find((item) => String(item.seq) === selectedPreSaleSeq) : null;
+    const value = $('task-stage').value === 'presale' ? choice?.openAt : metadata?.opening?.general;
+    const end = $('task-stage').value === 'presale' ? choice?.endAt : metadata?.opening?.generalEnd;
+    return Number.isFinite(Date.parse(value)) && Date.parse(end) > Date.parse(value) ? new Date(value).toISOString() : '';
+  }
+  function applyOfficialOpening() {
+    const choices = presaleChoices();
+    const select = $('presale-choice');
+    select.replaceChildren(new Option('请选择官网公布的预售窗口', ''));
+    for (const choice of choices) select.append(new Option(`${choice.label || '会员 / 先行开售'} · 北京 ${localTime(choice.openAt)}`, String(choice.seq)));
+    if (!choices.some((choice) => String(choice.seq) === selectedPreSaleSeq)) selectedPreSaleSeq = choices.length === 1 ? String(choices[0].seq) : '';
+    select.value = selectedPreSaleSeq;
+    const presale = $('task-stage').value === 'presale';
+    $('presale-choice-field').hidden = !presale;
+    select.required = presale && choices.length > 0;
+    select.disabled = !presale || !choices.length;
+    const choice = choices.find((item) => String(item.seq) === selectedPreSaleSeq);
+    const value = presale ? choice?.openAt : metadata?.opening?.general;
+    const end = presale ? choice?.endAt : metadata?.opening?.generalEnd;
+    if (!['reading', 'error', 'idle'].includes(openingStatus)) openingStatus = Number.isFinite(Date.parse(value)) && Date.parse(end) > Date.parse(value) ? 'official' : presale && choices.length > 1 ? 'selection-required' : 'unavailable';
+    $('open-at').value = openingIso() ? localTime(openingIso()) : '';
+    updateStartButtons();
   }
   function money(value) { return Number(value).toLocaleString('zh-CN'); }
   function taskFromFields() {
+    if (!openingIso()) throw new Error(openingStatus === 'selection-required' ? '请先选择与你的购票资格对应的官网预售窗口。' : '没有可用的官网开售时间，暂时无法保存或启动任务。请稍后重新读取。');
     if (!$('task-form').reportValidity()) return null;
     const url = new URL($('product-url').value.trim());
     const path = url.pathname.match(/\/ticket\/places\/(\d+)\/products\/(\d+)(?:\/)?$/);
@@ -56,7 +82,7 @@
       id: taskId || crypto.randomUUID(), name: $('task-name').value.trim(), productUrl: url.toString(),
       goodsCode: path[2], placeCode: path[1], productName: metadata?.goodsName || state.tasks.find((item) => item.id === taskId && item.productUrl === url.toString())?.productName || '',
       kind: $('task-kind').value, stage: $('task-stage').value, openAt: openingIso(),
-      openAtSource: manualOpening ? 'manual' : 'official',
+      preSaleSeq: $('task-stage').value === 'presale' ? selectedPreSaleSeq : '', openAtSource: 'official',
       quantity: Number($('quantity').value), maxTotal: null, currency: 'KRW',
       profileId: $('task-profile').value, alternatives
     };
@@ -135,9 +161,9 @@
     $('product-url').value = task?.productUrl || DEFAULT_PRODUCT;
     $('task-kind').value = task?.kind || 'package';
     $('task-stage').value = task?.stage || 'general';
-    $('open-at').value = task?.openAt ? localTime(task.openAt, 'Asia/Shanghai', true) : '';
-    manualOpening = task?.openAtSource === 'manual';
-    if (manualOpening) openingStatus = 'manual';
+    selectedPreSaleSeq = String(task?.preSaleSeq || '');
+    $('open-at').value = '';
+    applyOfficialOpening();
     $('quantity').value = task?.quantity || 1;
     $('task-profile').value = task?.profileId || '';
     $('task-editor-title').textContent = task ? '编辑购票任务' : '新建购票任务';
@@ -234,15 +260,17 @@
     const packageTask = $('task-kind').value === 'package';
     $('quantity-label').textContent = packageTask ? '套餐数量（份）' : '购票数量（张）';
     $('quantity-hint').textContent = packageTask ? '每份人数在下方购票选择中填写。' : '数量须符合网站实际限购规则。';
-    const source = openingStatus === 'official' ? '已从官网读取。' : openingStatus === 'manual' ? '使用手动设置的时间。' : openingStatus === 'reading' ? '正在从官网读取开售时间。' : '';
-    $('open-at-hint').textContent = Number.isFinite(time) ? `${source}北京时间 ${localTime(new Date(time).toISOString())} / 韩国时间 ${localTime(new Date(time).toISOString(), 'Asia/Seoul')}。` : `${source}${openingStatus === 'unavailable' ? '官网未公布该阶段的开售时间，请手动设置或稍后重新读取。' : '官网未公布或测试倒计时时，可手动设置。'}`;
-    $('start-hint').textContent = past ? '已开售。点击「立即开始」启动官方入口；当前选场次、选票和订单需由你继续操作。' : '到达开售时间后启动官方入口。请提前完成公告、登录及身份验证；当前后段购票流程由你接管。';
+    const available = Number.isFinite(time) && openingStatus === 'official';
+    for (const id of ['save-task', 'arm-task', 'start-now']) $(id).disabled = !available || busySaving;
+    const source = openingStatus === 'reading' ? '正在从官网读取开售时间。' : openingStatus === 'selection-required' ? '官网公布了多个预售窗口，请先选择对应的窗口。' : openingStatus === 'error' ? '读取失败，请重新读取官网信息。' : '官网尚未公布所选阶段的有效开售时间。';
+    $('open-at-hint').textContent = available ? `官网时间：北京 ${localTime(new Date(time).toISOString())} / 韩国 ${localTime(new Date(time).toISOString(), 'Asia/Seoul')}。保存和启动时会再次核对。` : `${source}没有官网时间时无法保存或启动。`;
+    $('start-hint').textContent = past ? '官网显示已开售。点击「立即开始」请求官方入场接口；网站验证与排队仍须按官方流程继续，选场次、选座和下单由你接管。' : '到官网开售时间后请求官方入场接口。请提前完成登录及身份验证；选场次、选座和下单由你接管。';
   }
   function resetProductRead() {
     clearTimeout(productReadTimer);
     productReadSequence += 1;
     openingStatus = 'idle';
-    manualOpening = false;
+    selectedPreSaleSeq = '';
     $('read-product').disabled = false;
     $('read-product').textContent = '重新读取';
     $('product-read-status').textContent = '粘贴商品链接后，自动读取开售时间和公开票档。';
@@ -258,6 +286,7 @@
     try { NolHelper.parseProductUrl(url); } catch (error) { if (!automatic) fail(error); return; }
     const sequence = ++productReadSequence;
     openingStatus = 'reading';
+    $('open-at').value = '';
     $('product-read-status').textContent = '正在读取官网开售时间和公开票档…';
     const button = $('read-product'); button.disabled = true; button.textContent = '读取中…';
     updateStartButtons();
@@ -267,16 +296,17 @@
       metadata = data?.metadata || data;
       if (!metadata?.goodsCode || !metadata.placeCode) throw new Error('没有读取到完整的商品编号与场馆编号。');
       if (!$('task-name').value.trim()) $('task-name').value = metadata.goodsName || metadata.productName || '公演购票任务';
-      const opening = metadata.opening?.[$('task-stage').value];
-      if (!manualOpening) $('open-at').value = opening ? localTime(opening, 'Asia/Shanghai', true) : '';
-      openingStatus = manualOpening ? 'manual' : opening ? 'official' : 'unavailable';
-      $('product-read-status').textContent = manualOpening ? '已读取官网资料，保留你手动设置的触发时间。切换开售阶段可恢复官网时间。' : opening ? '已自动读取开售时间和公开票档。切换开售阶段会自动更新时间。' : '已读取商品；官网未公布所选阶段的开售时间。';
+      openingStatus = 'unavailable';
+      applyOfficialOpening();
+      const opening = openingIso();
+      $('product-read-status').textContent = opening ? '已自动读取官网开售时间和公开票档。切换开售阶段会自动更新时间。' : openingStatus === 'selection-required' ? '已读取商品；请选择对应的官网预售窗口。' : '已读取商品；官网尚未公布所选阶段的有效开售时间。';
       renderProductSummary(); renderAlternatives(getAlternatives()); markDirty();
-      if (!automatic) notice(opening ? '已读取商品和开售时间。请核对购票选择和联系人。' : '已读取商品；该阶段尚未公布开售时间，可手动设置。', opening ? 'success' : 'neutral');
+      if (!automatic) notice(opening ? '已读取商品和官网开售时间。请核对购票选择和联系人。' : openingStatus === 'selection-required' ? '请选择与你的购票资格对应的预售窗口。' : '该阶段没有可用的官网开售时间，暂时无法保存或启动。', opening ? 'success' : 'neutral');
     } catch (error) {
       if (sequence !== productReadSequence) return;
       openingStatus = 'error';
-      $('product-read-status').textContent = `自动读取未成功：${error.message || '网站暂时无法读取'}。可点击「重新读取」，或手动设置开售时间。`;
+      $('open-at').value = '';
+      $('product-read-status').textContent = `自动读取未成功：${error.message || '网站暂时无法读取'}。请点击「重新读取」；读取成功前无法保存或启动。`;
       if (!automatic) fail(error);
     } finally {
       if (sequence === productReadSequence) { button.disabled = false; button.textContent = '重新读取'; updateStartButtons(); }
@@ -287,15 +317,19 @@
     busySaving = true;
     try {
       const task = taskFromFields(); if (!task) return;
+      updateStartButtons();
       const saved = await request('SAVE_TASK', { task });
       taskId = saved.id;
       await refresh(true);
       const currentMetadata = metadata;
       const currentOpeningStatus = openingStatus;
-      editTask(saved, { read: false }); metadata = currentMetadata; openingStatus = currentOpeningStatus; renderProductSummary(); renderAlternatives(saved.alternatives); updateStartButtons();
+      editTask(saved, { read: false }); metadata = currentMetadata; openingStatus = currentOpeningStatus;
+      if (saved.stage === 'general' && metadata?.opening) { metadata.opening.general = saved.openAt; metadata.opening.generalEnd = saved.officialEndAt; }
+      if (saved.stage === 'presale') { const choice = metadata?.presaleChoices?.find((item) => String(item.seq) === String(saved.preSaleSeq)); if (choice) { choice.openAt = saved.openAt; choice.endAt = saved.officialEndAt; } }
+      applyOfficialOpening(); renderProductSummary(); renderAlternatives(saved.alternatives); updateStartButtons();
       if (arm) { await request('ARM', { taskId: saved.id, ...(immediate ? { immediate: true } : {}) }); await refresh(true); }
       notice(arm ? immediate ? '已请求立即开始。请保持浏览器前台，并留意人工接管提示。' : '已保存并开始值守。请保持浏览器前台。' : '任务已保存。');
-    } catch (error) { fail(error); } finally { busySaving = false; }
+    } catch (error) { fail(error); } finally { busySaving = false; updateStartButtons(); }
   }
   function editProfile(profile) {
     profileId = profile?.id || null;
@@ -339,16 +373,11 @@
     scheduleProductRead();
   });
   $('task-stage').addEventListener('change', () => {
-    manualOpening = false;
-    const iso = metadata?.opening?.[$('task-stage').value];
-    $('open-at').value = iso ? localTime(iso, 'Asia/Shanghai', true) : '';
-    if (metadata?.opening) {
-      openingStatus = iso ? 'official' : 'unavailable';
-      $('product-read-status').textContent = iso ? '已按所选阶段自动填入官网开售时间。' : '官网未公布所选阶段的开售时间。';
-    } else if (openingStatus !== 'reading') scheduleProductRead(0);
+    if (metadata?.opening) applyOfficialOpening();
+    else if (openingStatus !== 'reading') scheduleProductRead(0);
     updateStartButtons();
   });
-  $('open-at').addEventListener('input', () => { manualOpening = true; openingStatus = 'manual'; updateStartButtons(); });
+  $('presale-choice').addEventListener('change', () => { selectedPreSaleSeq = $('presale-choice').value; applyOfficialOpening(); markDirty(); });
   $('add-alternative').addEventListener('click', () => { renderAlternatives([...getAlternatives(), {}]); markDirty(); });
   $('arm-task').addEventListener('click', () => saveTask(true));
   $('start-now').addEventListener('click', () => saveTask(true, true));

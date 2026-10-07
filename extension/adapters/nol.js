@@ -151,30 +151,33 @@
     throw error;
   }
 
-  function enter(doc, ctx) {
+  async function enter(doc, ctx) {
     const task = ctx && ctx.task;
     const run = ctx && ctx.run;
     if (!task || !run || !run.id || run.entryClaimed !== true) fail('ENTRY_NOT_CLAIMED', '本次执行尚未取得已保存的入口执行权。');
     if (run.entryClicked || attemptedRuns.has(run.id)) fail('ENTRY_ALREADY_ATTEMPTED', '本次任务已经尝试预约入口，不能重复点击。');
-    const openAt = typeof task.openAt === 'number' ? task.openAt : Date.parse(task.openAt);
+    const triggerTime = run.openAt || task.openAt;
+    const openAt = typeof triggerTime === 'number' ? triggerTime : Date.parse(triggerTime);
     const now = typeof ctx.now === 'number' ? ctx.now : Date.now();
     if (!Number.isFinite(openAt) || !Number.isFinite(now) || now < openAt) fail('BEFORE_OPEN_TIME', '尚未到配置的开售时间。');
     const state = inspect(doc, ctx);
-    if (state.kind !== 'entry' || !state.canEnter) fail(state.code, state.reason);
+    if (state.kind !== 'entry') fail(state.code, state.reason);
+    if (typeof ctx.requestEntry !== 'function') fail('API_BRIDGE_UNAVAILABLE', '官方入场接口尚未连接，请刷新商品页。');
     attemptedRuns.add(run.id);
-    // A normal DOM click only. No token requests, queue calls or trusted-event spoofing.
-    state.entryButton.click();
-    return { clicked: true };
+    // The state owner injects the verified, same-origin API flow into MAIN world.
+    // No DOM fallback: an uncertain POST must never create a second entry.
+    return ctx.requestEntry();
   }
 
   function step(doc, ctx) {
     const state = inspect(doc, ctx);
     if (state.kind !== 'entry') return { status: 'manual', code: state.code, reason: state.reason };
-    if (ctx && ctx.run && ctx.run.entryClicked) return { status: 'waiting', reason: '已尝试普通预约入口，等待网站跳转。登录、邮箱和人机验证需在网站上完成。' };
+    if (ctx && ctx.run && ctx.run.entrySubmitted) return { status: 'waiting', reason: '官方入场接口已提交，等待官方排队和页面跳转。' };
+    if (ctx && ctx.run && ctx.run.apiDispatched) return { status: 'manual', reason: '入场接口已处理，请检查官方验证与页面状态；不会重复提交。' };
     return { status: 'waiting', code: state.code, reason: state.reason };
   }
 
   const helper = root.NolHelper = root.NolHelper || {};
   helper.adapters = helper.adapters || {};
-  helper.adapters.nol = Object.freeze({ id: 'nol', matches: (url) => !!productIdentity(url), inspect, enter, step, extractProduct, entrySelector: ENTRY_SELECTOR });
+  helper.adapters.nol = Object.freeze({ id: 'nol', entryMode:'api', matches: (url) => !!productIdentity(url), inspect, enter, step, extractProduct, entrySelector: ENTRY_SELECTOR });
 }(globalThis));

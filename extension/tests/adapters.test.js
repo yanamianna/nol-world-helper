@@ -59,12 +59,17 @@ function context(overrides = {}) {
   return {
     task: { productUrl: url, goodsCode: '26013792', placeCode: '26001167', openAt: 1000, maxTotal: null, ...overrides.task },
     run: { id: 'run-one', entryClaimed: true, entryClicked: false, ...overrides.run },
-    now: overrides.now === undefined ? 1000 : overrides.now
+    now: overrides.now === undefined ? 1000 : overrides.now,
+    requestEntry: overrides.requestEntry || (async () => ({submitted: true, code: 'ENTRY_REDIRECTING'}))
   };
 }
 
 function throwsCode(action, expected) {
   assert.throws(action, (error) => error.code === expected);
+}
+
+function rejectsCode(action, expected) {
+  return assert.rejects(action, (error) => error.code === expected);
 }
 
 test('NOL matches only exact HTTPS public ticket product URLs', () => {
@@ -99,55 +104,81 @@ test('verified entry structure is used, and the disabled style utility is not a 
   assert.equal(state.entryButton, entry);
 });
 
-test('a unique visible entry triggers only one normal DOM click', () => {
+test('a unique visible entry requests the official API once and never clicks the DOM', async () => {
   const { nol } = loadAdapters();
   const entry = button();
   const doc = documentStub([entry, button({ hidden: true })]);
-  assert.equal(nol.enter(doc, context()).clicked, true);
-  assert.equal(entry.clicks, 1);
-  throwsCode(() => nol.enter(doc, context()), 'ENTRY_ALREADY_ATTEMPTED');
-  assert.equal(entry.clicks, 1);
+  let requests = 0;
+  const ctx = context({requestEntry: async () => { requests += 1; return {submitted: true, code: 'ENTRY_REDIRECTING'}; }});
+  assert.equal((await nol.enter(doc, ctx)).submitted, true);
+  await rejectsCode(() => nol.enter(doc, ctx), 'ENTRY_ALREADY_ATTEMPTED');
+  assert.equal(requests, 1);
+  assert.equal(entry.clicks, 0);
 });
 
-test('two visible candidates and absent candidates cannot enter', () => {
+test('two visible candidates and absent candidates cannot enter', async () => {
   const { nol } = loadAdapters();
-  throwsCode(() => nol.enter(documentStub([button(), button()]), context()), 'ENTRY_AMBIGUOUS');
-  throwsCode(() => nol.enter(documentStub([]), context()), 'ENTRY_NOT_VISIBLE');
+  await rejectsCode(() => nol.enter(documentStub([button(), button()]), context()), 'ENTRY_AMBIGUOUS');
+  await rejectsCode(() => nol.enter(documentStub([]), context()), 'ENTRY_NOT_VISIBLE');
 });
 
-test('native disabled, aria-disabled, invisible and inert entries cannot enter', () => {
-  for (const [options, code] of [[{ disabled: true }, 'ENTRY_DISABLED'], [{ ariaDisabled: true }, 'ENTRY_DISABLED'], [{ ariaBusy: true }, 'ENTRY_DISABLED'], [{ hidden: true }, 'ENTRY_NOT_VISIBLE'], [{ inertAncestor: true }, 'ENTRY_NOT_VISIBLE'], [{ style: { pointerEvents: 'none' } }, 'ENTRY_NOT_VISIBLE']]) {
+test('a disabled official button does not delay the time-checked API entry', async () => {
+  for (const options of [{disabled: true}, {ariaDisabled: true}, {ariaBusy: true}]) {
     const { nol } = loadAdapters();
     const entry = button(options);
-    throwsCode(() => nol.enter(documentStub([entry]), context()), code);
+    let requests = 0;
+    const result = await nol.enter(documentStub([entry]), context({requestEntry: async () => { requests += 1; return {submitted: true, code: 'ENTRY_REDIRECTING'}; }}));
+    assert.equal(result.submitted, true);
+    assert.equal(requests, 1);
     assert.equal(entry.clicks, 0);
   }
 });
 
-test('the observed announcement modal forces manual handling without dismissing it', () => {
+test('invisible and inert entries cannot request the API', async () => {
+  for (const [options, code] of [[{ hidden: true }, 'ENTRY_NOT_VISIBLE'], [{ inertAncestor: true }, 'ENTRY_NOT_VISIBLE'], [{ style: { pointerEvents: 'none' } }, 'ENTRY_NOT_VISIBLE']]) {
+    const { nol } = loadAdapters();
+    const entry = button(options);
+    await rejectsCode(() => nol.enter(documentStub([entry]), context()), code);
+    assert.equal(entry.clicks, 0);
+  }
+});
+
+test('the observed announcement modal forces manual handling without dismissing it', async () => {
   const { nol } = loadAdapters();
   assert.match(html, /role="dialog"/);
   const modal = button();
   const doc = documentStub([button()], { modals: [modal] });
-  throwsCode(() => nol.enter(doc, context()), 'MODAL_REQUIRES_MANUAL');
+  await rejectsCode(() => nol.enter(doc, context()), 'MODAL_REQUIRES_MANUAL');
   assert.equal(nol.step(doc, context()).status, 'manual');
   assert.equal(modal.clicks, 0);
 });
 
-test('the configured goods and place must match both URL and metadata', () => {
+test('the configured goods and place must match both URL and metadata', async () => {
   const { nol } = loadAdapters();
-  throwsCode(() => nol.enter(documentStub(), context({ task: { goodsCode: '26013793' } })), 'PRODUCT_MISMATCH');
+  await rejectsCode(() => nol.enter(documentStub(), context({ task: { goodsCode: '26013793' } })), 'PRODUCT_MISMATCH');
   const other = url.replace('26013792', '26013793');
   const state = nol.inspect(documentStub([button()], { url: other }), context({ task: { productUrl: other, goodsCode: '26013793' } }));
   assert.equal(state.code, 'PRODUCT_METADATA_MISMATCH');
 });
 
-test('claim, opening time and persisted prior attempt guard every entry', () => {
+test('claim, opening time and persisted prior attempt guard every entry', async () => {
   const { nol } = loadAdapters();
   const doc = documentStub();
-  throwsCode(() => nol.enter(doc, context({ run: { entryClaimed: false } })), 'ENTRY_NOT_CLAIMED');
-  throwsCode(() => nol.enter(doc, context({ now: 999 })), 'BEFORE_OPEN_TIME');
-  throwsCode(() => nol.enter(doc, context({ run: { entryClicked: true } })), 'ENTRY_ALREADY_ATTEMPTED');
+  await rejectsCode(() => nol.enter(doc, context({ run: { entryClaimed: false } })), 'ENTRY_NOT_CLAIMED');
+  await rejectsCode(() => nol.enter(doc, context({ now: 999 })), 'BEFORE_OPEN_TIME');
+  await rejectsCode(() => nol.enter(doc, context({ run: { entryClicked: true } })), 'ENTRY_ALREADY_ATTEMPTED');
+});
+
+test('a failed API attempt is not retried locally or changed into a DOM click', async () => {
+  const { nol } = loadAdapters();
+  const entry = button();
+  const doc = documentStub([entry]);
+  let requests = 0;
+  const ctx = context({requestEntry: async () => { requests += 1; throw new Error('network outcome unknown'); }});
+  await assert.rejects(() => nol.enter(doc, ctx), /network outcome unknown/);
+  await rejectsCode(() => nol.enter(doc, ctx), 'ENTRY_ALREADY_ATTEMPTED');
+  assert.equal(requests, 1);
+  assert.equal(entry.clicks, 0);
 });
 
 test('global gates remain explicitly unverified; no generic payment title enables automation', () => {
