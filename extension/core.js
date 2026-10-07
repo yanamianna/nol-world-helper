@@ -78,12 +78,13 @@
       if (a.seatGrade && a.priceGrade) return actual.seatGrade === a.seatGrade && actual.priceGrade === a.priceGrade && actual.people === a.people;
       return actual.packageLabel === a.packageLabel && actual.people === a.people;
     }
+    if (a.seatGrade && actual.seatGrade !== a.seatGrade || a.priceGrade && actual.priceGrade !== a.priceGrade) return false;
     return !a.zones.length || a.zones.includes(actual.zone);
   }
   function checkOrder(task, actual) {
     const bad = reason => ({ok: false, reason});
     if (!actual || actual.goodsCode !== task.goodsCode || actual.placeCode !== task.placeCode) return bad('商品或场馆不匹配');
-    if (!task.alternatives.some(a => matchesAlternative(task, a, actual))) return bad('场次、酒店人数或座区不符合购票选择');
+    if (!task.alternatives.some(a => matchesAlternative(task, a, actual))) return bad('场次、档位、酒店人数或座区不符合购票选择');
     if (actual.quantity !== task.quantity) return bad('票数或套餐份数不匹配');
     if (actual.currency !== task.currency) return bad('币种不匹配');
     if (actual.feesKnown !== true || !Number.isSafeInteger(actual.total) || actual.total <= 0) return bad('含必要费用的总金额尚未确认');

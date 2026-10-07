@@ -210,6 +210,32 @@ test('订单商品、场地、日期、指定时间、座区与数量必须匹�
   ]) assert.equal(H.checkOrder(task, ticketOrder(change)).ok, false, JSON.stringify(change));
 });
 
+test('普通票已选档位必须匹配，错档位或缺少档位不能成为可用选择', () => {
+  const task = ticketTask();
+  for (const change of [{seatGrade: '2'}, {priceGrade: 'U2'}, {seatGrade: undefined}, {priceGrade: undefined}]) {
+    assert.equal(H.checkOrder(task, ticketOrder(change)).ok, false, JSON.stringify(change));
+  }
+  const wrongGrade = ticketOrder({marker: 'wrong-grade-cheaper', seatGrade: '2', total: 100000});
+  const wrongPrice = ticketOrder({marker: 'wrong-price-cheaper', priceGrade: 'U2', total: 110000});
+  const matching = ticketOrder({marker: 'selected-grade', total: 90000000});
+  assert.equal(H.pickAlternative(task, [wrongGrade, wrongPrice, matching]).marker, 'selected-grade');
+  assert.equal(H.pickAlternative(task, [wrongGrade, wrongPrice]), null);
+});
+
+test('普通票未选档位保留任意档位语义，单独选择的档位编号仍受约束', () => {
+  const base = taskInput().alternatives[0];
+  const anyGrade = ticketTask({alternatives: [{...base, seatGrade: '', priceGrade: ''}]});
+  assert.equal(H.checkOrder(anyGrade, ticketOrder({seatGrade: '2', priceGrade: 'U2'})).ok, true);
+  assert.equal(H.checkOrder(anyGrade, ticketOrder({seatGrade: undefined, priceGrade: undefined})).ok, true);
+  assert.equal(H.checkOrder(anyGrade, ticketOrder({zone: 'C'})).ok, false);
+  const seatOnly = ticketTask({alternatives: [{...base, priceGrade: ''}]});
+  assert.equal(H.checkOrder(seatOnly, ticketOrder({priceGrade: 'U2'})).ok, true);
+  assert.equal(H.checkOrder(seatOnly, ticketOrder({seatGrade: '2'})).ok, false);
+  const priceOnly = ticketTask({alternatives: [{...base, seatGrade: ''}]});
+  assert.equal(H.checkOrder(priceOnly, ticketOrder({seatGrade: '2'})).ok, true);
+  assert.equal(H.checkOrder(priceOnly, ticketOrder({priceGrade: 'U2'})).ok, false);
+});
+
 test('确认的高金额不受旧预算限制；含费金额未知、无效或币种不符仍暂停', () => {
   const task = ticketTask({maxTotal: 310000});
   assert.equal(task.maxTotal, null);
