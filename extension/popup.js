@@ -19,6 +19,14 @@
     return new Intl.DateTimeFormat('zh-CN', { timeZone: zone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
   }
   function selectedTask() { return state.tasks.find((task) => task.id === $('popup-task').value); }
+  function resumeState(run) {
+    if (!run || !['paused', 'waiting-manual'].includes(run.status)) return { available: false, hint: '' };
+    if (run.navigationErrorCode) return { available: false, hint: '官网页面连接失败。请检查官网状态，停止后重新启动任务；不会重新提交入场接口。' };
+    if (!run.entrySubmitted && (run.entryClaimed || run.apiDispatched || run.entryAttempted)) return { available: false, hint: '入场尚未确认成功。请检查官网状态，停止后重新启动任务；此处不会重试入场。' };
+    if (run.entrySubmitted) return { available: true, label: '继续观察', hint: '只继续观察官方购票页面，不会重新验证或再次提交入场接口。' };
+    if (!Number.isFinite(Date.parse(run.openAt)) || Date.parse(run.openAt) <= Date.now()) return { available: false, hint: '触发时间已过或无法确认。请先停止任务，再检查官网并重新启动；扩展不会补发入场请求。' };
+    return { available: true, label: '继续值守', hint: '继续等待官网开售时间，尚未启动入场。' };
+  }
   function renderTasks() {
     const active = state.run && !finalStatuses.has(state.run.status);
     const selected = active ? state.run.taskId : $('popup-task').value || state.tasks[0]?.id || '';
@@ -35,15 +43,18 @@
     $('run-detail').hidden = !task;
     const officialTime = task?.openAtSource === 'official' && Number.isFinite(Date.parse(task.openAt)) && Date.parse(task.officialEndAt) > Date.parse(task.openAt);
     const opened = officialTime && new Date(task.openAt).getTime() <= Date.now();
+    const resume = resumeState(run);
     $('run-status').textContent = run && (active || run.taskId === task?.id) ? labels[run.status] || '任务状态' : '尚未开始';
     $('run-status').className = `badge${run?.status === 'payment' ? ' success' : run?.status === 'waiting-manual' || run?.status === 'missed' ? ' caution' : ''}`;
     $('run-detail').textContent = active || run?.taskId === task?.id ? [run?.step, run?.reason].filter(Boolean).join(' · ') || '等待任务状态更新。' : '保存任务后，在这里开始值守。';
+    if (active && resume.hint) $('run-detail').textContent += ` ${resume.hint}`;
     $('popup-arm').hidden = active || Boolean(opened);
     $('popup-immediate').hidden = active || !opened;
     $('popup-arm').disabled = !officialTime || actionPending;
     $('popup-immediate').disabled = !officialTime || actionPending;
     $('popup-pause').hidden = !active || run.status === 'paused' || run.status === 'waiting-manual';
-    $('popup-resume').hidden = !active || !['paused', 'waiting-manual'].includes(run.status);
+    $('popup-resume').hidden = !active || !resume.available;
+    $('popup-resume').textContent = resume.label || '继续';
     $('popup-stop').hidden = !active;
     for (const id of ['popup-pause', 'popup-resume', 'popup-stop']) $(id).disabled = actionPending;
     if (!task) { $('countdown-label').textContent = '距离开售'; $('countdown').textContent = '—'; $('sale-time').textContent = '先在设置中添加商品和联系人。'; return; }
@@ -80,7 +91,7 @@
   $('popup-arm').addEventListener('click', () => { const task = selectedTask(); if (task) act('ARM', { taskId: task.id }); });
   $('popup-immediate').addEventListener('click', () => { const task = selectedTask(); if (task) act('ARM', { taskId: task.id, immediate: true }); });
   $('popup-pause').addEventListener('click', () => act('PAUSE'));
-  $('popup-resume').addEventListener('click', () => act('RESUME'));
+  $('popup-resume').addEventListener('click', () => { const resume = resumeState(state.run); if (!resume.available) return fail(new Error(resume.hint || '当前任务不能继续，请检查任务状态。')); act('RESUME'); });
   $('popup-stop').addEventListener('click', () => act('STOP'));
   $('popup-diagnostics').addEventListener('click', () => diagnostics().catch(fail));
   chrome.storage.onChanged.addListener((_changes, area) => { if (area === 'local') refresh().catch(fail); });

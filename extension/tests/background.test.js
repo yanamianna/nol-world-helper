@@ -59,6 +59,7 @@ function harness(initial = armedState(), options = {}) {
       async openOptionsPage() { calls.options += 1; },
       onMessage: event(), onStartup: event(), onInstalled: event()
     },
+    webNavigation: {onErrorOccurred: event()},
     tabs: {
       async create(value) { const tab = { id: nextTab++, windowId: 5, ...value }; tabs.set(tab.id, tab); calls.createTabs.push(copy(tab)); return copy(tab); },
       async get(id) { if (!tabs.has(id)) throw new Error('tab absent'); return copy(tabs.get(id)); },
@@ -109,7 +110,7 @@ function harness(initial = armedState(), options = {}) {
       try { chrome.runtime.onMessage.listeners[0](copy(message), copy(sender), resolve); } catch (error) { reject(error); }
     });
   }
-  return { chrome, calls, database, clock, ui, site, send, scriptStarted, state: () => copy(database.nolHelperState) };
+  return { chrome, calls, database, clock, ui, site, send, scriptStarted, tabs, state: () => copy(database.nolHelperState) };
 }
 
 test('settings-only messages require the actual extension origin, while the assigned site gets only task context', async () => {
@@ -359,6 +360,7 @@ test('the claimed official API entry submits once and stores no returned credent
   assert.equal(h.calls.scripts[0].target.tabId, 23);
   assert.equal(h.state().run.entryAttempted, true);
   assert.equal(h.state().run.entrySubmitted, true);
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_REDIRECTING');
   assert.equal(JSON.stringify(h.state()).includes(token), false);
   assert.equal(JSON.stringify(responses).includes(token), false);
   assert.equal((await h.send(request, h.site)).ok, false);
@@ -393,9 +395,149 @@ test('an unknown API result or scripting failure pauses for takeover without rep
     assert.equal(h.state().run.apiDispatched, true);
     assert.equal(h.state().run.entryAttempted, !options.scriptError);
     assert.equal(h.state().run.entrySubmitted, false);
+    assert.equal(h.state().run.entryResultCode, 'ENTRY_RESULT_UNKNOWN');
     assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site)).ok, false);
     assert.equal(h.calls.scripts.length, 1);
   }
+});
+
+test('entry failures retain their exact takeover reason through generic page checks and rejected resumes', async () => {
+  for (const [code, expected] of [
+    ['ENTRY_LOGIN_REQUIRED', /官网完成登录/],
+    ['ENTRY_EMAIL_REQUIRED', /官网补全邮箱/],
+    ['ENTRY_VERIFICATION_FAILED', /网站验证失败/],
+    ['ENTRY_VERIFICATION_EXPIRED', /网站验证已过期/],
+    ['ENTRY_SDK_UNAVAILABLE', /验证组件未能加载/],
+    ['ENTRY_RESPONSE_UNKNOWN', /入场请求结果不明确/]
+  ]) {
+    const submitted = code === 'ENTRY_RESPONSE_UNKNOWN';
+    const secret = 'PRIVATE_FAILED_ENTRY_TOKEN';
+    const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptResult: {submitted, code, token: secret, url: 'https://tickets.interpark.com/gates/partner?partner_token=' + secret}});
+    assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site)).ok, true);
+    const failure = h.state().run;
+    assert.equal(failure.entryResultCode, code);
+    assert.equal(failure.status, 'waiting-manual');
+    assert.match(failure.reason, expected);
+    for (const status of ['manual', 'waiting', 'progress']) {
+      const reply = await h.send({type: 'PAGE_STATE', runId: 'run-1', status, reason: '泛化页面提示 ' + secret}, h.site);
+      assert.equal(reply.data, false, code + ': ' + status);
+      assert.deepEqual(h.state().run, failure);
+    }
+    const resume = await h.send({type: 'RESUME'});
+    assert.equal(resume.ok, false);
+    assert.match(resume.error, expected);
+    assert.match(resume.error, /停止后重新启动/);
+    assert.deepEqual(h.state().run, failure);
+    assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site)).ok, false);
+    assert.equal(h.calls.scripts.length, 1);
+    assert.equal(JSON.stringify(h.state()).includes(secret), false);
+  }
+});
+
+test('pausing a finished entry failure keeps its original diagnosis and cannot resume verification', async () => {
+  const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptResult: {submitted: false, code: 'ENTRY_EMAIL_REQUIRED'}});
+  await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+  const reason = h.state().run.reason;
+  assert.equal((await h.send({type: 'PAUSE'})).ok, true);
+  assert.equal(h.state().run.status, 'paused');
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_EMAIL_REQUIRED');
+  assert.equal(h.state().run.reason, reason);
+  assert.equal((await h.send({type: 'RESUME'})).ok, false);
+  assert.equal(h.calls.scripts.filter((call) => call.func.name === 'officialEntry').length, 1);
+});
+
+test('pending verification ignores page polls and cancellation remains final even before a late result', async () => {
+  let releaseScript;
+  const scriptBarrier = new Promise((resolve) => { releaseScript = resolve; });
+  const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptBarrier});
+  const entering = h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+  await h.scriptStarted;
+  const pending = h.state().run;
+  assert.equal((await h.send({type: 'PAGE_STATE', runId: 'run-1', status: 'manual', reason: '泛化页面检查'}, h.site)).data, false);
+  assert.deepEqual(h.state().run, pending);
+  assert.equal((await h.send({type: 'PAUSE'})).ok, true);
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_CANCELLED');
+  assert.match(h.state().run.reason, /入场流程已取消/);
+  assert.equal((await h.send({type: 'RESUME'})).ok, false);
+  releaseScript();
+  await entering;
+  assert.equal(h.state().run.status, 'paused');
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_CANCELLED');
+  assert.equal(h.state().run.entrySubmitted, false);
+  assert.equal(h.calls.scripts.filter((call) => call.func.name === 'officialEntry').length, 1);
+});
+
+test('resume only observes after confirmed entry and never dispatches entry again', async () => {
+  const h = harness(armedState({status: 'running', entryClaimed: true}));
+  await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+  const gateSender = {...h.site, url: 'https://tickets.interpark.com/gates/zh/global/26013792'};
+  assert.equal((await h.send({type: 'PAGE_STATE', runId: 'run-1', status: 'manual', reason: '人工完成预约页面验证'}, gateSender)).data, true);
+  assert.equal((await h.send({type: 'RESUME'})).ok, true);
+  assert.equal(h.state().run.status, 'running');
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_REDIRECTING');
+  assert.equal(h.state().run.entrySubmitted, true);
+  assert.match(h.state().run.reason, /仅继续观察/);
+  assert.equal((await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site)).ok, false);
+  assert.equal(h.calls.scripts.length, 1);
+});
+
+test('an unresolved dispatched run cannot resume, while a paused countdown before entry can', async () => {
+  const unresolved = harness(armedState({status: 'paused', entryClaimed: true, apiDispatched: true}));
+  assert.equal((await unresolved.send({type: 'RESUME'})).ok, false);
+  assert.equal(unresolved.state().run.status, 'paused');
+  assert.equal(unresolved.calls.scripts.length, 0);
+  const countdown = harness(armedState({status: 'paused'}), {now: baseTime - 1000});
+  assert.equal((await countdown.send({type: 'RESUME'})).ok, true);
+  assert.equal(countdown.state().run.status, 'armed');
+  assert.equal(countdown.state().run.entryClaimed, false);
+  assert.equal(countdown.calls.scripts.length, 0);
+});
+
+test('a manual arrival at payment still stops an uncertain entry run', async () => {
+  const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptError: 'script disconnected'});
+  await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+  const gateSender = {...h.site, url: 'https://ticket.globalinterpark.com/Global/Play/Book/BookMain.asp'};
+  assert.equal((await h.send({type: 'PAGE_STATE', runId: 'run-1', status: 'payment'}, gateSender)).data, true);
+  assert.equal(h.state().run.status, 'payment');
+  assert.equal(h.state().run.entryResultCode, 'ENTRY_RESULT_UNKNOWN');
+  assert.equal((await h.send({type: 'RESUME'})).ok, false);
+  assert.equal(h.calls.scripts.length, 1);
+});
+
+test('a recorded navigation failure survives late API success, page polling and pause', async () => {
+  let releaseScript;
+  const scriptBarrier = new Promise((resolve) => { releaseScript = resolve; });
+  const h = harness(armedState({status: 'running', entryClaimed: true}), {scriptBarrier});
+  const entering = h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
+  await h.scriptStarted;
+  // Simulate the independent navigation listener recording its finite result.
+  const failed = h.state();
+  failed.run.status = 'waiting-manual';
+  failed.run.navigationErrorCode = 'ERR_CONNECTION_RESET';
+  failed.run.reason = '官方售票页面连接中断，请检查连接后停止并重新启动。';
+  h.database.nolHelperState = failed;
+  releaseScript();
+  await entering;
+  assert.deepEqual(h.state().run, failed.run);
+  for (const status of ['manual', 'waiting', 'progress']) {
+    assert.equal((await h.send({type: 'PAGE_STATE', runId: 'run-1', status, reason: '泛化页面提示'}, h.site)).data, false);
+    assert.equal(h.state().run.reason, failed.run.reason);
+  }
+  assert.equal((await h.send({type: 'PAUSE'})).ok, true);
+  assert.equal(h.state().run.navigationErrorCode, 'ERR_CONNECTION_RESET');
+  assert.equal(h.state().run.reason, failed.run.reason);
+  const resume = await h.send({type: 'RESUME'});
+  assert.equal(resume.ok, false);
+  assert.match(resume.error, /连接失败.*停止后重新启动/);
+  assert.equal(h.calls.scripts.filter((call) => call.func.name === 'officialEntry').length, 1);
+});
+
+test('a navigation failure also prevents resuming an already submitted entry', async () => {
+  const h = harness(armedState({status: 'waiting-manual', entryClaimed: true, apiDispatched: true, entrySubmitted: true, navigationErrorCode: 'ERR_NAME_NOT_RESOLVED', reason: '官网地址无法解析'}));
+  assert.equal((await h.send({type: 'RESUME'})).ok, false);
+  assert.equal(h.state().run.status, 'waiting-manual');
+  assert.equal(h.state().run.reason, '官网地址无法解析');
+  assert.equal(h.calls.scripts.length, 0);
 });
 
 test('pause and stop settle promptly while API entry is pending and discard its late success', async () => {
@@ -480,4 +622,58 @@ test('a failed periodic official refresh pauses the armed run rather than retain
   assert.equal(h.state().run.entryClaimed, false);
   assert.equal(h.calls.scripts.length, 0);
   assert.ok(h.calls.clearAlarms.includes('sale:' + armed.data.id));
+});
+
+test('official main navigation timeout preserves entry guards and stores no gate credentials', async () => {
+  const h = harness(armedState({status:'running',entryClaimed:true,apiDispatched:true,entrySubmitted:true,entryAttempted:true}));
+  const gate = 'https://tickets.interpark.com/gates/partner?partner_token=SYNTHETIC_NAV_SECRET';
+  h.tabs.get(23).url = gate;
+  await h.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
+  const r = h.state().run;
+  assert.equal(r.status,'waiting-manual');
+  assert.equal(r.navigationErrorCode,'ERR_CONNECTION_TIMED_OUT');
+  assert.equal(r.navigationErrorHost,'tickets.interpark.com');
+  assert.match(r.reason,/连接超时/);
+  assert.equal(r.entryClaimed,true);
+  assert.equal(r.entrySubmitted,true);
+  assert.ok(h.calls.clearAlarms.includes('sale:run-1'));
+  assert.equal(h.calls.scripts.length,0,'navigation error never retries entry');
+  assert.equal(JSON.stringify(h.calls.writes).includes('SYNTHETIC_NAV_SECRET'),false);
+  const diagnostic = await h.send({type:'EXPORT_DIAGNOSTICS'});
+  assert.equal(diagnostic.data.run.navigationErrorCode,'ERR_CONNECTION_TIMED_OUT');
+  assert.equal(JSON.stringify(diagnostic).includes('SYNTHETIC_NAV_SECRET'),false);
+  assert.equal((await h.send({type:'RESUME'})).ok,false);
+  assert.equal(h.state().run.status,'waiting-manual');
+});
+
+test('a newer pending navigation prevents an old failure from replacing the current run state', async () => {
+  const gate = 'https://tickets.interpark.com/gates/partner?partner_token=OLD_SYNTHETIC';
+  const h = harness(armedState({status:'running',entryClaimed:true,apiDispatched:true}));
+  h.tabs.get(23).url = gate;
+  h.tabs.get(23).pendingUrl = 'https://tickets.interpark.com/gates/partner?partner_token=NEW_SYNTHETIC';
+  await h.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
+  assert.equal(h.state().run.status,'running');
+  assert.equal(h.state().run.navigationErrorCode,undefined);
+  assert.equal(h.calls.writes.length,0);
+  h.tabs.get(23).pendingUrl = gate;
+  await h.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
+  assert.equal(h.state().run.status,'waiting-manual');
+});
+
+test('cancelled, unrelated, unclaimed and missing-tab navigation errors have no side effects', async () => {
+  const gate = 'https://tickets.interpark.com/gates/partner';
+  for (const change of [{frameId:1},{tabId:24},{error:'net::ERR_ABORTED'},{url:'https://unrelated.example.test/'}]) {
+    const h = harness(armedState({status:'running',entryClaimed:true,apiDispatched:true}));
+    h.tabs.get(23).url = gate;
+    await h.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT',...change});
+    assert.equal(h.calls.writes.length,0);
+  }
+  const unclaimed = harness();
+  unclaimed.tabs.get(23).url = gate;
+  await unclaimed.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
+  assert.equal(unclaimed.calls.writes.length,0);
+  const missing = harness(armedState({status:'running',entryClaimed:true}));
+  missing.tabs.delete(23);
+  await missing.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
+  assert.equal(missing.calls.writes.length,0);
 });

@@ -1,5 +1,5 @@
 'use strict';
-importScripts('core.js', 'entry-api.js', 'adapters/nol.js', 'adapters/global.js');
+importScripts('core.js', 'entry-api.js', 'navigation.js', 'adapters/nol.js', 'adapters/global.js');
 const H = globalThis.NolHelper;
 const KEY = 'nolHelperState';
 const HOSTS = new Set(['world.nol.com', 'tickets.interpark.com', 'ticket.globalinterpark.com']);
@@ -75,17 +75,18 @@ async function cancelEntry(run) {
 }
 const apiReasons = {
   ENTRY_REDIRECTING:'官方入场接口已返回成功，正在进入官方售票流程。',
-  ENTRY_LOGIN_REQUIRED:'请先在官网完成登录，然后重新启动任务。',
-  ENTRY_EMAIL_REQUIRED:'请先在官网补全邮箱，然后重新启动任务。',
+  ENTRY_LOGIN_REQUIRED:'请先在官网完成登录，停止后重新启动任务。',
+  ENTRY_EMAIL_REQUIRED:'请先在官网补全邮箱，停止后重新启动任务。',
   ENTRY_RESPONSE_UNKNOWN:'入场请求结果不明确，请检查官网状态；扩展不会重复提交。',
   ENTRY_RESULT_UNKNOWN:'页面已跳转或接口结果不明确，请检查官网状态；扩展不会重试。',
-  ENTRY_CANCELLED:'入场流程已取消，不会重试。',
-  ENTRY_VERIFICATION_FAILED:'网站验证失败，请在官网检查并重新启动。',
-  ENTRY_VERIFICATION_EXPIRED:'网站验证已过期，请检查后重新启动。',
+  ENTRY_CANCELLED:'入场流程已取消，请检查官网状态，停止后重新启动任务；不会重试。',
+  ENTRY_VERIFICATION_FAILED:'网站验证失败，请在官网检查，停止后重新启动任务。',
+  ENTRY_VERIFICATION_EXPIRED:'网站验证已过期，请检查官网状态，停止后重新启动任务。',
   ENTRY_TIMEOUT:'网站验证或入场请求超时，请检查官网状态；扩展不会重试。',
   ENTRY_SDK_UNAVAILABLE:'网站验证组件未能加载，请检查官网状态。',
   ENTRY_SALE_ENDED:'所选官网开售窗口已结束。'
 };
+function entryReason(code) { return apiReasons[code] || '入场流程未完成，请在官网检查状态，停止后重新启动任务；扩展不会重试。'; }
 async function runEntry(message,sender) {
   const payload=await serialize(async()=>{
     const s=await read(),c=context(s,sender),r=c?.run;
@@ -108,11 +109,11 @@ async function runEntry(message,sender) {
   const safe={submitted:result.submitted===true,code:codes.has(result.code)?result.code:'ENTRY_RESULT_UNKNOWN'};
   await serialize(async()=>{
     const s=await read(),r=s.run;if (!r || r.id!==payload.runId) return;
-    if (TERMINAL.has(r.status) || r.status==='paused') return;
-    r.entryAttempted=safe.submitted;r.entrySubmitted=safe.submitted && safe.code==='ENTRY_REDIRECTING';
+    if (TERMINAL.has(r.status) || r.status==='paused' || r.navigationErrorCode) return;
+    r.entryAttempted=safe.submitted;r.entrySubmitted=safe.submitted && safe.code==='ENTRY_REDIRECTING';r.entryResultCode=safe.code;
     if (!TERMINAL.has(r.status) && r.status!=='paused') {
       r.status=r.entrySubmitted?'running':'waiting-manual';
-      record(r,r.entrySubmitted?'已提交官方入场接口':'需要人工检查',apiReasons[safe.code] || '入场流程未完成，请在官网检查状态；扩展不会重试。');
+      record(r,r.entrySubmitted?'已提交官方入场接口':'需要人工检查',entryReason(safe.code));
     }
     await write(s);
   });
@@ -156,7 +157,7 @@ async function handle(message,sender) {
       s.tasks=s.tasks.map(task=>task.id===t.id?t:task);
       const openAt=immediate ? new Date(Date.now()+1000).toISOString() : t.openAt;
       const tab=await chrome.tabs.create({url:t.productUrl,active:Date.parse(openAt)-Date.now()<=300000});
-      s.run={id:H.makeId(),taskId:t.id,tabId:tab.id,status:'armed',openAt,officialOpenAt:t.openAt,officialEndAt:t.officialEndAt,officialCheckedAt:t.officialCheckedAt,step:'等待官网开售',reason:'保持商品页前台、电脑清醒；公告与登录请提前处理。',entryClaimed:false,apiDispatched:false,entryAttempted:false,entrySubmitted:false,events:[],updatedAt:Date.now(),heartbeatAt:0};
+      s.run={id:H.makeId(),taskId:t.id,tabId:tab.id,status:'armed',openAt,officialOpenAt:t.openAt,officialEndAt:t.officialEndAt,officialCheckedAt:t.officialCheckedAt,step:'等待官网开售',reason:'保持商品页前台、电脑清醒；公告与登录请提前处理。',entryClaimed:false,apiDispatched:false,entryAttempted:false,entrySubmitted:false,entryResultCode:null,events:[],updatedAt:Date.now(),heartbeatAt:0};
       await write(s);
       await chrome.alarms.create(`warm:${s.run.id}`,{when:Math.max(Date.now()+500,Date.parse(openAt)-300000)});
       await chrome.alarms.create(`deadline:${s.run.id}`,{when:Date.parse(openAt)+6000});
@@ -179,6 +180,9 @@ async function handle(message,sender) {
     case 'PAGE_STATE':
       if(message.runId!==c.run.id || ['paused','missed','stopped','payment'].includes(c.run.status)) return false;
       if(!['waiting','manual','payment','progress'].includes(message.status)) throw new Error('未知页面状态');
+      // A generic page inspection cannot finish verification or erase its failure.
+      // Payment is still a terminal stop if the user reaches it manually.
+      if((c.run.navigationErrorCode || c.run.apiDispatched && !c.run.entrySubmitted) && message.status!=='payment') return false;
       if(message.status==='payment') {c.run.status='payment';record(c.run,'已到付款页','扩展已停止，请自行检查并付款');await clearAlarms(c.run);}
       else if(message.status==='manual') {c.run.status='waiting-manual';record(c.run,'需要人工操作',String(message.reason || '页面尚未适配，请人工接管').slice(0,200));}
       else if(c.run.entryClaimed) {c.run.status='running';record(c.run,'等待网站处理',String(message.reason || '').slice(0,200));}
@@ -186,11 +190,14 @@ async function handle(message,sender) {
     case 'HEARTBEAT': c.run.heartbeatAt=Date.now(); await chrome.storage.local.set({[KEY]:s}); return true;
     case 'PAUSE':
       if(!s.run || TERMINAL.has(s.run.status)) return false;
-      s.run.status='paused';record(s.run,'已暂停',ui?'由你暂停任务':String(message.reason || '页面状态变化，需要检查').slice(0,200));await write(s);void cancelEntry(s.run);return true;
+      if(s.run.apiDispatched && !s.run.entrySubmitted && !s.run.entryResultCode) s.run.entryResultCode='ENTRY_CANCELLED';
+      s.run.status='paused';record(s.run,'已暂停',s.run.navigationErrorCode ? s.run.reason : s.run.apiDispatched && !s.run.entrySubmitted ? entryReason(s.run.entryResultCode) : ui?'由你暂停任务':String(message.reason || '页面状态变化，需要检查').slice(0,200));await write(s);void cancelEntry(s.run);return true;
     case 'RESUME': {
       if(!s.run || !['paused','waiting-manual'].includes(s.run.status)) throw new Error('没有可继续的任务');
+      if(s.run.navigationErrorCode) throw new Error('官方购票页面连接失败，请检查官网状态，停止后重新启动任务；不会重新提交入场接口。');
+      if(s.run.entryClaimed && !s.run.entrySubmitted) throw new Error((s.run.entryResultCode ? entryReason(s.run.entryResultCode) : '入场尚未确认成功，请检查官网状态。') + ' 此任务不能恢复入场，请停止后重新启动；不会自动提交。');
       if(!s.run.entryClaimed && Date.parse(s.run.openAt)<=Date.now()) throw new Error('触发时间已过，请停止后使用“立即开始”');
-      s.run.status=s.run.entryClaimed?'running':'armed';record(s.run,'继续观察','不会再次点击已经启动过的购票入口');await write(s);return true;
+      s.run.status=s.run.entryClaimed?'running':'armed';record(s.run,'继续观察',s.run.entrySubmitted?'仅继续观察官方购票页面，不会重新验证或再次提交入场接口。':'继续等待开售时间，尚未启动购票入口。');await write(s);return true;
     }
     case 'STOP':
       if(s.run){await clearAlarms(s.run);s.run.status='stopped';record(s.run,'已停止','停止扩展不会取消网站中已有订单或队列');await write(s);void cancelEntry(s.run);}return true;
@@ -268,3 +275,15 @@ chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{
     else if(tab.openerTabId===r.tabId && allowed(change.url) && r.entryClaimed && r.status!=='paused') {r.tabId=tabId;record(r,'已跟随官方新窗口','后续操作按已验证页面能力执行');await write(s);}
   });
 });
+chrome.webNavigation.onErrorOccurred.addListener(details=>serialize(async()=>{
+  const s=await read(),r=s.run,failure=H.navigationFailure(details,r);
+  if(!failure) return;
+  // Compare only in memory: an older navigation can fail after a new one starts.
+  // Never put the gate URL, its query or the raw browser error into storage.
+  let tab;
+  try {tab=await chrome.tabs.get(details.tabId);} catch {return;}
+  if(!H.navigationMatchesTab(details,tab)) return;
+  r.navigationErrorCode=failure.errorCode;r.navigationErrorHost=failure.host;
+  r.status='waiting-manual';record(r,'官方购票页未能加载',failure.reason);
+  await clearAlarms(r);await write(s);
+}),{url:[...HOSTS].map(hostEquals=>({schemes:['https'],hostEquals}))});
