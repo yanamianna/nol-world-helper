@@ -119,6 +119,73 @@ function harness(initial = armedState(), options = {}) {
   return { chrome, calls, database, clock, ui, site, send, scriptStarted, tabs, state: () => copy(database.nolHelperState) };
 }
 
+function openSales(openAt=baseTime-60000,endAt=baseTime+3600000) {
+  const sales=copy(capturedSales);
+  const kst=value=>new Date(value+9*3600000).toISOString().slice(0,19).replace('T',' ');
+  sales.data.salesInfo.bookingOpenTime=kst(openAt);sales.data.salesInfo.bookingEndTime=kst(endAt);
+  return sales;
+}
+function modalState(overrides={}) {return armedState({status:'waiting-manual',manualBlockCode:'MODAL_REQUIRES_MANUAL',...overrides});}
+
+test('manual modal state is preserved for a matching unclaimed product only', async()=>{
+  for(const [overrides,code,expected] of [[{},'MODAL_REQUIRES_MANUAL','MODAL_REQUIRES_MANUAL'],[{},'UNKNOWN',null],[{entryClaimed:true},'MODAL_REQUIRES_MANUAL',null]]) {
+    const h=harness(armedState(overrides));
+    assert.equal((await h.send({type:'PAGE_STATE',runId:'run-1',status:'manual',code},h.site)).ok,true);
+    assert.equal(h.state().run.manualBlockCode,expected);
+    assert.equal(h.state().run.status,'waiting-manual');
+  }
+});
+
+test('user continuation after modal rechecks official time and arms the same tab exactly once',async()=>{
+  const h=harness(modalState(),{sales:openSales()});
+  const msg={type:'CONTINUE_ENTRY',runId:'run-1',visible:true};
+  const results=await Promise.all([h.send(msg,h.site),h.send(msg,h.site)]);
+  assert.equal(results.filter(r=>r.ok).length,1);
+  const r=h.state().run;
+  assert.equal(r.id,'run-1');assert.equal(r.tabId,23);assert.equal(r.status,'armed');assert.equal(r.manualBlockCode,null);
+  assert.equal(Date.parse(r.openAt),baseTime+1000);assert.equal(r.entryClaimed,false);
+  assert.equal(h.calls.createTabs.length,0);assert.equal(h.calls.scripts.length,0);
+  assert.equal(h.calls.fetch.every(call=>call.method==='GET'),true);
+  assert.equal((await h.send({type:'CLAIM_ENTRY',runId:r.id,visible:true,lastTick:baseTime},h.site)).ok,false);
+  h.clock.now+=1000;
+  assert.equal((await h.send({type:'CLAIM_ENTRY',runId:r.id,visible:true,lastTick:baseTime},h.site)).ok,true);
+  assert.equal((await h.send({type:'API_ENTRY',runId:r.id},h.site)).ok,true);
+  assert.equal(h.calls.scripts.length,1);
+  assert.equal((await h.send(msg,h.site)).ok,false);
+});
+
+test('modal continuation rejects attempted, unknown, paused, stopped and stale-run states before fetching',async()=>{
+  for(const overrides of [{entryClaimed:true},{apiDispatched:true},{entryAttempted:true},{entrySubmitted:true},{entryResultCode:'ENTRY_RESULT_UNKNOWN'},{navigationErrorCode:'ERR_TIMED_OUT'},{queueObserved:true},{status:'paused'},{status:'stopped'},{manualBlockCode:null}]) {
+    const h=harness(modalState(overrides),{sales:openSales()});
+    assert.equal((await h.send({type:'CONTINUE_ENTRY',runId:'run-1',visible:true},h.site)).ok,false,JSON.stringify(overrides));
+    assert.equal(h.calls.fetch.length,0);assert.equal(h.calls.scripts.length,0);
+  }
+  const h=harness(modalState(),{sales:openSales()});
+  for(const sender of [h.ui,{...h.site,frameId:1},{...h.site,tab:{id:99}},{...h.site,url:productUrl.replace('26013793','99999990')}]) assert.equal((await h.send({type:'CONTINUE_ENTRY',runId:'run-1',visible:true},sender)).ok,false);
+  assert.equal((await h.send({type:'CONTINUE_ENTRY',runId:'old-run',visible:true},h.site)).ok,false);
+  assert.equal(h.calls.fetch.length,0);
+});
+
+test('modal continuation requires the current foreground document and a live official sale window',async()=>{
+  for(const options of [{active:false},{focused:false},{tabUrl:productUrl+'?changed=1'},{documentId:'new-document'},{sales:openSales(baseTime+60000,baseTime+3600000)},{sales:openSales(baseTime-3600000,baseTime-60000)},{salesHTTP:503}]) {
+    const h=harness(modalState(),{sales:openSales(),...options});
+    const sender=options.documentId?{...h.site,documentId:'old-document'}:h.site;
+    assert.equal((await h.send({type:'CONTINUE_ENTRY',runId:'run-1',visible:true},sender)).ok,false,JSON.stringify(options));
+    assert.equal(h.state().run.status,'waiting-manual');assert.equal(h.calls.createTabs.length,0);assert.equal(h.calls.scripts.length,0);
+  }
+});
+
+test('stopping or pausing while continuation reads official data prevents the delayed arm',async()=>{
+  for(const action of ['STOP','PAUSE']) {
+    let release;const barrier=new Promise(resolve=>{release=resolve;});
+    const h=harness(modalState(),{sales:openSales(),productBarrier:barrier});
+    const pending=h.send({type:'CONTINUE_ENTRY',runId:'run-1',visible:true},h.site);
+    while(!h.calls.fetch.length)await new Promise(resolve=>setImmediate(resolve));
+    assert.equal((await h.send({type:action})).ok,true);release();
+    assert.equal((await pending).ok,false);assert.equal(h.state().run.status,action==='STOP'?'stopped':'paused');assert.equal(h.calls.createTabs.length,0);
+  }
+});
+
 test('settings-only messages require the actual extension origin, while the assigned site gets only task context', async () => {
   const h = harness();
   const state = await h.send({ type: 'GET_STATE' });
@@ -451,7 +518,11 @@ test('entry failures retain their exact takeover reason through generic page che
     ['ENTRY_EMAIL_REQUIRED', /官网补全邮箱/],
     ['ENTRY_VERIFICATION_FAILED', /网站验证失败/],
     ['ENTRY_VERIFICATION_EXPIRED', /网站验证已过期/],
-    ['ENTRY_SDK_UNAVAILABLE', /验证组件未能加载/],
+    ['ENTRY_SDK_UNAVAILABLE', /官网验证组件不可用/],
+    ['ENTRY_SDK_LOAD_FAILED', /验证脚本加载失败/],
+    ['ENTRY_SDK_LOAD_TIMEOUT', /验证脚本加载超时/],
+    ['ENTRY_SDK_READY_TIMEOUT', /验证组件初始化超时/],
+    ['ENTRY_WIDGET_INIT_FAILED', /验证窗口创建失败/],
     ['ENTRY_RESPONSE_UNKNOWN', /入场请求结果不明确/]
   ]) {
     const submitted = code === 'ENTRY_RESPONSE_UNKNOWN';

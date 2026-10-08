@@ -5,12 +5,14 @@
   const H=globalThis.NolHelper;
   const observedCaptchaTask={goodsCode:'26013793',placeCode:'26001167',productName:'JEONGHAN X JOSHUA JOURNEY INTO ［DREAMING］ - INCHEON'};
   let ocrVisible=false,ocrEnabled=false,ocrBusy=false,ocrSnapshot=null,ocrEpoch=0,ocrCollapsed=false,lastOCRStatus=0;
-  let context=null,lastTick=Date.now(),busy=false,claimInFlight=false,closed=false,lastPoll=0,lastInspect=0,lastPageState='',startClock=Date.now(),startMono=performance.now();
+  let context=null,lastTick=Date.now(),busy=false,tickInFlight=false,claimInFlight=false,continuing=false,closed=false,lastPoll=0,lastInspect=0,lastPageState='',startClock=Date.now(),startMono=performance.now();
   const host=document.createElement('div');host.id='nol-ticket-helper';
   const shadow=host.attachShadow({mode:'closed'});
   shadow.innerHTML='<style>:host{all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483600;font-family:system-ui,"Microsoft YaHei",sans-serif}*{box-sizing:border-box}.box{width:300px;background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 6px 24px #0f172a26;padding:16px;font-size:13px;line-height:1.6}h3{font-size:15px;margin:0 0 6px}p{margin:5px 0;overflow-wrap:anywhere}.timer{font-variant-numeric:tabular-nums;font-size:24px;font-weight:650}button{font:inherit;cursor:pointer;background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:6px;min-height:36px;padding:4px 12px;margin:8px 8px 0 0}button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.note{color:#64748b;font-size:12px}@media(max-width:400px){:host{right:8px;bottom:8px}.box{width:280px}}</style><div class="box"><h3>NOL 开票助手</h3><div class="timer"></div><p class="step"></p><p class="reason"></p><p class="note">验证由你完成，付款由你操作。</p><button class="pause">暂停</button><button class="settings">设置</button></div>';
   const timer=shadow.querySelector('.timer'),step=shadow.querySelector('.step'),reason=shadow.querySelector('.reason');
   const box=shadow.querySelector('.box');
+  const continueButton=document.createElement('button');
+  continueButton.type='button';continueButton.className='continue-entry';continueButton.textContent='已处理提示，继续';continueButton.hidden=true;box.append(continueButton);
   const runNodes=[...box.children];
   const ocr=document.createElement('section');
   ocr.hidden=true;
@@ -22,6 +24,21 @@
   shadow.querySelector('.settings').textContent='查看说明';
   shadow.querySelector('.settings').addEventListener('click',()=>{reason.textContent='点击浏览器工具栏中的 NOL 开票助手图标，可打开设置或停止任务。';});
   shadow.querySelector('.pause').addEventListener('click',()=>send({type:'PAUSE',reason:'由你在购票页暂停'}).then(refresh).catch(showError));
+  continueButton.addEventListener('click',async event=>{
+    if(!event.isTrusted || continuing || !canContinue())return;
+    continuing=true;render();
+    try {
+      const state=adapter()?.inspect(document,context);
+      if(state?.kind!=='entry')throw new Error(state?.reason || '购票入口尚未准备好，请先处理官网提示。');
+      await send({type:'CONTINUE_ENTRY',runId:context.run.id,visible:document.visibilityState==='visible'});
+      lastPageState='';lastTick=Date.now();startClock=Date.now();startMono=performance.now();
+      await refresh();
+    }catch(error){showError(error);}finally{continuing=false;continueButton.disabled=false;}
+  });
+  function canContinue(){
+    const r=context?.run;let product;try {product=H.parseProductUrl(location.href);}catch {return false;}
+    return product.goodsCode===context?.task.goodsCode && product.placeCode===context?.task.placeCode && r?.status==='waiting-manual' && r.manualBlockCode==='MODAL_REQUIRES_MANUAL' && !r.entryClaimed && !r.apiDispatched && !r.entryAttempted && !r.entrySubmitted && !r.entryResultCode && !r.navigationErrorCode && !r.queueObserved;
+  }
   function showError(e){reason.textContent=e.message;}
   function captchaContext(){return {task:context?.task || observedCaptchaTask};}
   function clearCandidate(message='') {
@@ -74,6 +91,7 @@
   function render() {
     const showRun=!!context && !['stopped','payment','missed'].includes(context.run.status);
     for(const node of runNodes) node.hidden=!showRun||ocrVisible;
+    continueButton.hidden=!showRun || ocrVisible || !canContinue();continueButton.disabled=continuing;
     renderOCR();
     if(!showRun && !ocrVisible){host.remove();return;}
     if(!host.isConnected) document.documentElement.append(host);
@@ -117,7 +135,7 @@
       if(decision!=='fire') return;
       const state=a.inspect(document,context);
       if(state.kind==='entry' && state.canEnter===false && a.entryMode!=='api'){reason.textContent=state.reason;return;}
-      if(state.kind!=='entry') {await pageState({status:'manual',reason:state.reason || '购票按钮尚未准备好，请人工处理'});return;}
+      if(state.kind!=='entry') {await pageState({status:'manual',code:state.code,reason:state.reason || '购票按钮尚未准备好，请人工处理'});return;}
       claimInFlight=true;
       try {
         const claim=await send({type:'CLAIM_ENTRY',runId:r.id,visible:true,lastTick:previous});
@@ -141,5 +159,5 @@
   document.addEventListener('visibilitychange',()=>{lastTick=Date.now();render();});
   addEventListener('pagehide',()=>{closed=true;});
   refresh();
-  setInterval(()=>{if(!busy && !claimInFlight) tick().catch(showError);},100);
+  setInterval(()=>{if(!busy && !tickInFlight && !claimInFlight && !continuing){tickInFlight=true;tick().catch(showError).finally(()=>{tickInFlight=false;});}},100);
 })();

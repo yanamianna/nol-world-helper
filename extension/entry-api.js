@@ -82,32 +82,50 @@
     }
 
     async function loadSDK() {
-      if (window.turnstile && typeof window.turnstile.render === 'function') return window.turnstile;
       return new Promise((resolve, reject) => {
         const existing = Array.from(document.querySelectorAll('script[src]')).find((script) => {
           try { const url = new URL(script.src); return url.origin === 'https://challenges.cloudflare.com' && url.pathname === '/turnstile/v0/api.js'; } catch (_) { return false; }
         });
-        const script = existing || document.createElement('script');
-        let settled = false;
-        const finish = (code) => {
+        const script = existing || (window.turnstile ? null : document.createElement('script'));
+        let settled = false, readyStarted = false, pollTimer;
+        const finish = (code, api) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          script.removeEventListener('load', onLoad);
-          script.removeEventListener('error', onError);
+          clearTimeout(pollTimer);
+          script?.removeEventListener('load', onLoad);
+          script?.removeEventListener('error', onError);
           controller.signal.removeEventListener('abort', onCancel);
-          if (!existing) script.remove();
-          if (!code && window.turnstile && typeof window.turnstile.render === 'function') resolve(window.turnstile);
+          if (!existing && script) script.remove();
+          if (!code && api && typeof api.render === 'function') resolve(api);
           else { const error = new Error(code || 'ENTRY_SDK_UNAVAILABLE'); error.code = code || 'ENTRY_SDK_UNAVAILABLE'; reject(error); }
         };
-        const onLoad = () => finish();
-        const onError = () => finish('ENTRY_SDK_UNAVAILABLE');
+        const checkSDK = () => {
+          if (settled || readyStarted) return;
+          clearTimeout(pollTimer);
+          if (controller.signal.aborted) { finish(abortCode); return; }
+          const api = window.turnstile;
+          if (!api || typeof api.render !== 'function') {
+            // The website may already have dispatched its script load event.
+            // Observe readiness within this attempt; do not reload its script.
+            pollTimer = setTimeout(checkSDK, 50);
+            return;
+          }
+          readyStarted = true;
+          try {
+            if (typeof api.ready === 'function') api.ready(() => finish(null, api));
+            else finish(null, api);
+          } catch (_) { finish('ENTRY_SDK_UNAVAILABLE'); }
+        };
+        const onLoad = () => checkSDK();
+        const onError = () => finish('ENTRY_SDK_LOAD_FAILED');
         const onCancel = () => finish(abortCode);
-        const timer = setTimeout(() => finish('ENTRY_SDK_UNAVAILABLE'), 10000);
-        script.addEventListener('load', onLoad);
-        script.addEventListener('error', onError);
+        const timer = setTimeout(() => finish(readyStarted ? 'ENTRY_SDK_READY_TIMEOUT' : 'ENTRY_SDK_LOAD_TIMEOUT'), 10000);
+        script?.addEventListener('load', onLoad);
+        script?.addEventListener('error', onError);
         controller.signal.addEventListener('abort', onCancel, { once: true });
-        if (!existing) {
+        checkSDK();
+        if (!settled && !existing && script) {
           // Official SDK only; do not overwrite NOL's own onload callback.
           script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
           script.async = true;
@@ -158,7 +176,7 @@
             'timeout-callback': () => finish(null, 'ENTRY_VERIFICATION_EXPIRED'),
             'unsupported-callback': () => finish(null, 'ENTRY_VERIFICATION_FAILED')
           });
-        } catch (_) { finish(null, 'ENTRY_SDK_UNAVAILABLE'); }
+        } catch (_) { finish(null, 'ENTRY_WIDGET_INIT_FAILED'); }
       });
     }
 

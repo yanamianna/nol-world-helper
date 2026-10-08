@@ -116,10 +116,26 @@ const apiReasons = {
   ENTRY_VERIFICATION_FAILED:'网站验证失败，请在官网检查，停止后重新启动任务。',
   ENTRY_VERIFICATION_EXPIRED:'网站验证已过期，请检查官网状态，停止后重新启动任务。',
   ENTRY_TIMEOUT:'网站验证或入场请求超时，请检查官网状态；扩展不会重试。',
-  ENTRY_SDK_UNAVAILABLE:'网站验证组件未能加载，请检查官网状态。',
+  ENTRY_SDK_UNAVAILABLE:'官网验证组件不可用，尚未提交入场请求。可处理官网提示后，点击官网购票按钮手动继续；本任务不会重试入场。',
+  ENTRY_SDK_LOAD_FAILED:'官网验证脚本加载失败，尚未提交入场请求。请检查代理、网络或脚本拦截，或点击官网购票按钮手动继续。',
+  ENTRY_SDK_LOAD_TIMEOUT:'等待官网验证脚本加载超时，尚未提交入场请求。请检查网络，或点击官网购票按钮手动继续。',
+  ENTRY_SDK_READY_TIMEOUT:'官网验证组件初始化超时，尚未提交入场请求。可点击官网购票按钮手动继续。',
+  ENTRY_WIDGET_INIT_FAILED:'官网验证窗口创建失败，尚未提交入场请求。请点击官网购票按钮手动继续；本任务不会重试。',
   ENTRY_SALE_ENDED:'所选官网开售窗口已结束。'
 };
 function entryReason(code) { return apiReasons[code] || '入场流程未完成，请在官网检查状态，停止后重新启动任务；扩展不会重试。'; }
+function continuationContext(state,message,sender) {
+  const c=context(state,sender),r=c?.run;
+  if(!c || message.runId!==r.id || r.status!=='waiting-manual' || r.manualBlockCode!=='MODAL_REQUIRES_MANUAL' || r.entryClaimed || r.apiDispatched || r.entryAttempted || r.entrySubmitted || r.entryResultCode || r.navigationErrorCode || r.queueObserved) throw new Error('只有尚未启动入场、正在等待处理公告的任务可以继续。');
+  const page=H.parseProductUrl(sender.url);
+  if(page.goodsCode!==c.task.goodsCode || page.placeCode!==c.task.placeCode) throw new Error('当前商品不匹配');
+  return c;
+}
+async function continueEntry(message,sender) {
+  const target=await serialize(async()=>continuationContext(await read(),message,sender).task.productUrl);
+  const officialProduct=await fetchProduct(target);
+  return serialize(()=>handle({...message,officialProduct},sender));
+}
 async function runEntry(message,sender) {
   const payload=await serialize(async()=>{
     const s=await read();await stopUnsupportedRun(s);
@@ -139,7 +155,7 @@ async function runEntry(message,sender) {
     if (!result || typeof result.code!=='string' || typeof result.submitted!=='boolean') result={submitted:false,code:'ENTRY_RESULT_UNKNOWN'};
   } catch (_) {result={submitted:false,code:'ENTRY_RESULT_UNKNOWN'};}
   // Only finite status codes cross the page/extension boundary; never return a page URL or credentials.
-  const codes=new Set(['ENTRY_REDIRECTING','ENTRY_LOGIN_REQUIRED','ENTRY_EMAIL_REQUIRED','ENTRY_RESPONSE_UNKNOWN','ENTRY_CANCELLED','ENTRY_RESULT_UNKNOWN','ENTRY_VERIFICATION_FAILED','ENTRY_VERIFICATION_EXPIRED','ENTRY_TIMEOUT','ENTRY_SDK_UNAVAILABLE','ENTRY_SALE_ENDED','ENTRY_INVALID_CONFIG','ENTRY_PAGE_MISMATCH','ENTRY_PAGE_NOT_VISIBLE','ENTRY_BEFORE_OPEN','ENTRY_ALREADY_ATTEMPTED','ENTRY_ALREADY_STARTED','ENTRY_CONTEXT_UNAVAILABLE','ENTRY_OTHER_RUN_ACTIVE','ENTRY_STATUS_UNKNOWN','ENTRY_REQUEST_FAILED','ENTRY_REQUEST_TIMEOUT']);
+  const codes=new Set(['ENTRY_REDIRECTING','ENTRY_LOGIN_REQUIRED','ENTRY_EMAIL_REQUIRED','ENTRY_RESPONSE_UNKNOWN','ENTRY_CANCELLED','ENTRY_RESULT_UNKNOWN','ENTRY_VERIFICATION_FAILED','ENTRY_VERIFICATION_EXPIRED','ENTRY_TIMEOUT','ENTRY_SDK_UNAVAILABLE','ENTRY_SDK_LOAD_FAILED','ENTRY_SDK_LOAD_TIMEOUT','ENTRY_SDK_READY_TIMEOUT','ENTRY_WIDGET_INIT_FAILED','ENTRY_SALE_ENDED','ENTRY_INVALID_CONFIG','ENTRY_PAGE_MISMATCH','ENTRY_PAGE_NOT_VISIBLE','ENTRY_BEFORE_OPEN','ENTRY_ALREADY_ATTEMPTED','ENTRY_ALREADY_STARTED','ENTRY_CONTEXT_UNAVAILABLE','ENTRY_OTHER_RUN_ACTIVE','ENTRY_STATUS_UNKNOWN','ENTRY_REQUEST_FAILED','ENTRY_REQUEST_TIMEOUT']);
   const safe={submitted:result.submitted===true,code:codes.has(result.code)?result.code:'ENTRY_RESULT_UNKNOWN'};
   await serialize(async()=>{
     const s=await read(),r=s.run;if (!r || r.id!==payload.runId) return;
@@ -155,7 +171,7 @@ async function runEntry(message,sender) {
 }
 async function handle(message,sender) {
   const ui = trusted(sender);
-  const siteTypes = new Set(['GET_CONTEXT','CLAIM_ENTRY','ENTRY_RESULT','PAGE_STATE','HEARTBEAT','PAUSE']);
+  const siteTypes = new Set(['GET_CONTEXT','CONTINUE_ENTRY','CLAIM_ENTRY','ENTRY_RESULT','PAGE_STATE','HEARTBEAT','PAUSE']);
   if (!ui && !siteTypes.has(message?.type)) throw new Error('此操作只能由扩展设置页执行');
   if (message.type==='READ_PRODUCT') return fetchProduct(message.url);
   const s = await read();
@@ -211,6 +227,25 @@ async function handle(message,sender) {
       r.entryClaimed=true; r.status='running'; r.triggerAt=Date.now(); r.latencyMs=r.triggerAt-Date.parse(r.openAt);
       record(r,'准备官方入场接口','只执行一次；等待网站正常验证和跳转'); await write(s); return {runId:r.id,claimed:true};
     }
+    case 'CONTINUE_ENTRY': {
+      const current=continuationContext(s,message,sender),r=current.run;
+      const tab=await chrome.tabs.get(r.tabId),win=await chrome.windows.get(tab.windowId);
+      if(!tab.active || !win.focused || message.visible!==true || (tab.pendingUrl || tab.url)!==sender.url) throw new Error('请在原商品页前台处理提示后继续。');
+      if(sender.documentId) {
+        const frame=await chrome.webNavigation.getFrame({tabId:r.tabId,frameId:0});
+        if(frame?.documentId!==sender.documentId) throw new Error('商品页已变化，请重新检查。');
+      }
+      const t=H.validateTask(officialTask(current.task,message.officialProduct),s.profiles,Date.now(),true);
+      if(Date.now()<Date.parse(t.openAt) || Date.now()>=Date.parse(t.officialEndAt)) throw new Error('当前不在官网公布的开售时间窗口内，请重新检查任务。');
+      s.tasks=s.tasks.map(task=>task.id===t.id?t:task);
+      r.openAt=new Date(Date.now()+1000).toISOString();r.officialOpenAt=t.openAt;r.officialEndAt=t.officialEndAt;r.officialCheckedAt=t.officialCheckedAt;
+      r.manualBlockCode=null;r.status='armed';
+      record(r,'已确认提示处理完毕','将在此商品页继续一次入场；未提交过入场请求。');
+      await clearAlarms(r);await write(s);
+      await chrome.alarms.create(`deadline:${r.id}`,{when:Date.parse(r.openAt)+6000});
+      await chrome.alarms.create(`sale:${r.id}`,{periodInMinutes:1});
+      return {runId:r.id,continued:true};
+    }
     case 'ENTRY_RESULT': throw new Error('请刷新商品页以使用新的官方入场接口');
     case 'PAGE_STATE':
       if(message.runId!==c.run.id || ['paused','missed','stopped','payment'].includes(c.run.status)) return false;
@@ -235,7 +270,12 @@ async function handle(message,sender) {
       // Payment is still a terminal stop if the user reaches it manually.
       if((c.run.navigationErrorCode || c.run.apiDispatched && !c.run.entrySubmitted && !c.run.queueObserved) && message.status!=='payment') return false;
       if(message.status==='payment') {c.run.status='payment';record(c.run,'已到付款页','扩展已停止，请自行检查并付款');await clearAlarms(c.run);}
-      else if(message.status==='manual') {c.run.status='waiting-manual';record(c.run,'需要人工操作',String(message.reason || '页面尚未适配，请人工接管').slice(0,200));}
+      else if(message.status==='manual') {
+        c.run.status='waiting-manual';
+        let page;try {page=H.parseProductUrl(sender.url);}catch {}
+        c.run.manualBlockCode=!c.run.entryClaimed && !c.run.apiDispatched && message.code==='MODAL_REQUIRES_MANUAL' && page?.goodsCode===c.task.goodsCode && page?.placeCode===c.task.placeCode ? 'MODAL_REQUIRES_MANUAL' : null;
+        record(c.run,'需要人工操作',c.run.manualBlockCode ? '请先手动阅读并关闭官网公告或处理对话框，再点击助手的“已处理提示，继续”。尚未启动入场。' : String(message.reason || '页面尚未适配，请人工接管').slice(0,200));
+      }
       else if(c.run.entryClaimed) {c.run.status='running';record(c.run,'等待网站处理',String(message.reason || '').slice(0,200));}
       await write(s); return true;
     case 'HEARTBEAT': c.run.heartbeatAt=Date.now(); await chrome.storage.local.set({[KEY]:s}); return true;
@@ -262,6 +302,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   // Network reads and the interactive page verifier do not hold the state lock.
   const work=(async()=>{
     if (['OCR_STATUS','OCR_HEALTH','OCR_RECOGNIZE'].includes(message?.type)) return handleOCR(message,sender);
+    if (message?.type==='CONTINUE_ENTRY') return continueEntry(message,sender);
     if (message?.type==='API_ENTRY') return runEntry(message,sender);
     if (message?.type==='READ_PRODUCT') {if(!trusted(sender)) throw new Error('无权限');return fetchProduct(message.url);}
     if (message?.type==='SAVE_TASK' || message?.type==='ARM') {

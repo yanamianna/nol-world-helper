@@ -104,7 +104,7 @@
   function redactedRun(run) {
     if (!run) return null;
     const safe = {};
-    for (const key of ['id','taskId','status','step','reason','openAt','entryClaimed','entryAttempted','entrySubmitted','apiDispatched','entryResultCode','navigationErrorCode','navigationErrorHost','queueObserved','queuePosition','queueTotal','queueObservedAt','triggerAt','latencyMs','updatedAt']) safe[key] = run[key];
+    for (const key of ['id','taskId','status','step','reason','openAt','manualBlockCode','entryClaimed','entryAttempted','entrySubmitted','apiDispatched','entryResultCode','navigationErrorCode','navigationErrorHost','queueObserved','queuePosition','queueTotal','queueObservedAt','triggerAt','latencyMs','updatedAt']) safe[key] = run[key];
     safe.events = (run.events || []).map(e=>({at:e.at,step:e.step,reason:e.reason}));
     return safe;
   }
