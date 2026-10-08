@@ -113,8 +113,13 @@
       const layer = layers[0];
       const heading = one(layer, ':scope > h2.ModalCaptchaText_title__uRyg7');
       const input = one(layer, 'input[placeholder="請輸入畫面的文字 (不區分大小寫)"]');
-      const buttons = [...layer.querySelectorAll('button')].filter(button => visible(button, doc) && button.textContent.trim() === '完成輸入');
-      if (!heading || heading.textContent.trim() !== '請輸入畫面的文字' || !visible(heading, doc) || !visible(input, doc) || buttons.length !== 1) return unknown('SEAT_DOM_UNVERIFIED', '选座页验证控件结构尚未确认，请人工检查。');
+      // Official 7239 + 9219 components render content and footer as siblings
+      // inside this layout; the completion button is outside layerWrap.
+      const layout = typeof layer.closest === 'function' ? layer.closest('div.ModalLayout_innerWrap__c8kxP') : null;
+      const content = one(layout, ':scope > div.ModalLayout_content__Zm2NK');
+      const footer = one(layout, ':scope > footer.ModalLayout_footer__88ZwY');
+      const buttons = footer ? [...footer.querySelectorAll('button')].filter(button => visible(button, doc) && button.textContent.trim() === '完成輸入') : [];
+      if (!layout || !visible(layout, doc) || !content || !visible(content, doc) || one(content, ':scope > div.ModalCaptchaText_layerWrap__jn1bV') !== layer || !footer || !visible(footer, doc) || !heading || heading.textContent.trim() !== '請輸入畫面的文字' || !visible(heading, doc) || !visible(input, doc) || buttons.length !== 1) return unknown('SEAT_DOM_UNVERIFIED', '选座页验证控件结构尚未确认，请人工检查。');
       return {kind:'captcha',verified:true,route:'onestop-seat',code:'SEAT_CAPTCHA_REQUIRED',productName:expectedName.trim(),scheduleText:observedSchedule,reason:`已确认选座页：${expectedName.trim()}，场次 ${observedSchedule}。请本人完成画面验证码；扩展不会输入或提交验证码，选座与锁座尚未验证。`};
     }
     return {kind:'seat',verified:true,route:'onestop-seat',code:'SEAT_PAGE_MANUAL',productName:expectedName.trim(),scheduleText:observedSchedule,reason:`已确认选座页：${expectedName.trim()}，场次 ${observedSchedule}。选座与锁座尚未验证，请人工继续；扩展不会选择座位、锁票或创建订单。`};

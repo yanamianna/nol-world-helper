@@ -94,6 +94,17 @@
   $('popup-resume').addEventListener('click', () => { const resume = resumeState(state.run); if (!resume.available) return fail(new Error(resume.hint || '当前任务不能继续，请检查任务状态。')); act('RESUME'); });
   $('popup-stop').addEventListener('click', () => act('STOP'));
   $('popup-diagnostics').addEventListener('click', () => diagnostics().catch(fail));
+  async function refreshOCR() {
+    const enabled=(await request('OCR_STATUS'))?.enabled===true;
+    $('ocr-enable').hidden=enabled;$('ocr-health').hidden=!enabled;$('ocr-disable').hidden=!enabled;
+    $('ocr-summary').textContent=enabled?'已允许连接本机服务。到已适配选座页点击“识别当前图片”。':'尚未启用；不读取或发送验证码图片。';
+  }
+  $('ocr-enable').addEventListener('click',async()=>{
+    try {const granted=await chrome.permissions.request({origins:['http://127.0.0.1/*']});await refreshOCR();if(!granted) $('ocr-summary').textContent='未授予本机访问权限，仍可手动输入验证码。';}catch(error){fail(error);}
+  });
+  $('ocr-disable').addEventListener('click',async()=>{try{await chrome.permissions.remove({origins:['http://127.0.0.1/*']});await refreshOCR();}catch(error){fail(error);}});
+  $('ocr-health').addEventListener('click',async()=>{try{await request('OCR_HEALTH');$('ocr-summary').textContent='ddddocr 本机服务已就绪。请在官网选座页点击识别。';}catch(error){$('ocr-summary').textContent=error.message;}});
+  refreshOCR().catch(error=>{$('ocr-summary').textContent=error.message;});
   chrome.storage.onChanged.addListener((_changes, area) => { if (area === 'local') refresh().catch(fail); });
   setInterval(() => refresh().catch(fail), 1000);
   refresh().catch(fail);

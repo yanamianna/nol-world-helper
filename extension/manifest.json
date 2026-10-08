@@ -1,17 +1,18 @@
 {
   "manifest_version": 3,
   "name": "NOL 公演助手",
-  "version": "0.1.6",
-  "description": "按官网开售时间前台值守，通过官方入场接口进入购票。验证码人工完成，支付人工操作。",
+  "version": "0.1.7",
+  "description": "按官网开售时间前台值守，通过官方入口进入购票。图片验证码可本机识别并人工核对填入，支付人工操作。",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms", "scripting", "webNavigation"],
   "host_permissions": ["https://world.nol.com/*", "https://tickets.interpark.com/*", "https://ticket.globalinterpark.com/*"],
+  "optional_host_permissions": ["http://127.0.0.1/*"],
   "background": {"service_worker": "background.js"},
   "action": {"default_popup": "popup.html", "default_title": "NOL 公演助手"},
   "options_page": "options.html",
   "content_scripts": [{
     "matches": ["https://world.nol.com/*", "https://tickets.interpark.com/*", "https://ticket.globalinterpark.com/*"],
-    "js": ["core.js", "adapters/nol.js", "adapters/global.js", "content.js"],
+    "js": ["core.js", "adapters/nol.js", "adapters/global.js", "captcha.js", "content.js"],
     "run_at": "document_idle",
     "all_frames": false
   }],

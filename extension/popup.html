@@ -18,6 +18,7 @@
     <p id="run-detail" class="run-detail" aria-live="polite">保存任务后，在这里开始值守。</p>
     <div class="popup-actions"><button id="popup-arm" type="button" class="button" disabled>开始值守</button><button id="popup-immediate" type="button" class="button" hidden>立即开始</button><button id="popup-pause" type="button" class="button secondary" hidden>暂停</button><button id="popup-resume" type="button" class="button" hidden>继续</button><button id="popup-stop" type="button" class="button danger secondary" hidden>停止</button></div>
     <div class="notice neutral compact popup-boundary"><strong>售票后段未实测</strong><p>按官网时间请求官方入场接口，仍需网站验证。场次、选座、锁座和订单由你接管；请保持购票页前台。</p></div>
+    <section class="notice neutral compact"><strong>本机验证码识别</strong><p id="ocr-summary" role="status">正在检查启用状态…</p><p>先运行分发包 local-ocr 中的安装、启动脚本。图片仅送至本机；识别后由你核对、填入和官网提交。</p><button id="ocr-enable" type="button" class="text-button">启用本机识别</button><button id="ocr-health" type="button" class="text-button" hidden>检查服务</button><button id="ocr-disable" type="button" class="text-button" hidden>关闭识别</button></section>
     <button id="popup-diagnostics" type="button" class="text-button diagnostics-button">导出诊断</button>
   </main>
 </body>

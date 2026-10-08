@@ -38,13 +38,14 @@ function harness(initial = armedState(), options = {}) {
     static now() { return clock.now; }
   }
   const database = initial === null ? {} : { nolHelperState: copy(initial) };
-  const calls = { fetch: [], writes: [], messages: [], clearAlarms: [], createAlarms: [], createTabs: [], accessLevels: [], scripts: [], options: 0 };
+  const calls = { fetch: [], writes: [], messages: [], clearAlarms: [], createAlarms: [], createTabs: [], accessLevels: [], scripts: [], permissions: [], options: 0 };
   const tabs = new Map([[23, { id: 23, windowId: 5, active: options.active !== false, url: options.tabUrl || productUrl }]]);
   let nextTab = 24;
   let nextId = 1;
   let resolveScriptStarted;
   const scriptStarted = new Promise((resolve) => { resolveScriptStarted = resolve; });
   const chrome = {
+    permissions: { async contains(value) { calls.permissions.push(copy(value)); return options.ocrPermission===true; } },
     storage: { local: {
       async setAccessLevel(value) { calls.accessLevels.push(copy(value)); },
       async get(key) { return { [key]: copy(database[key]) }; },
@@ -87,7 +88,12 @@ function harness(initial = armedState(), options = {}) {
     chrome, URL, URLSearchParams, AbortController, Date: ControlledDate, setTimeout, clearTimeout,
     crypto: { randomUUID() { return 'generated-id-' + nextId++; } },
     async fetch(url, settings = {}) {
-      calls.fetch.push({ url: String(url), credentials: settings.credentials, redirect: settings.redirect, headers: copy(settings.headers || {}), method: settings.method || 'GET' });
+      calls.fetch.push({ url: String(url), credentials: settings.credentials, redirect: settings.redirect, headers: copy(settings.headers || {}), method: settings.method || 'GET', body: settings.body });
+      if (String(url).startsWith('http://127.0.0.1:8765/')) {
+        if (options.ocrFetchError) throw options.ocrFetchError;
+        const data=options.ocrResponse===undefined ? (String(url).endsWith('/health')?{ok:true,engine:'ddddocr'}:{ok:true,recognized:true,candidate:'ABCDEF'}) : options.ocrResponse;
+        return {ok:options.ocrHTTP===undefined || options.ocrHTTP===200,status:options.ocrHTTP || 200,async text() {return options.ocrText===undefined ? JSON.stringify(data) : options.ocrText;},async json() {throw new Error('OCR client must read and bound Response.text');}};
+      }
       if (String(url) === productUrl) {
         if (options.productBarrier) await options.productBarrier;
         return { ok: true, status: 200, async text() { return options.productHtml === undefined ? html : options.productHtml; } };
@@ -765,4 +771,153 @@ test('a delayed queue message cannot clear a newer navigation or document failur
   h.tabs.get(23).pendingUrl='https://tickets.interpark.com/gates/partner';
   assert.equal((await h.send(waitingMessage,waitingSite)).data,false);
   assert.equal(h.calls.writes.length,0);
+});
+
+const ocrSeatURL='https://tickets.interpark.com/onestop/seat';
+const ocrSecret='SYNTHETIC_PRIVATE_OCR_ROUTE_SENTINEL';
+const ocrBase64=Buffer.from(ocrSecret).toString('base64');
+const ocrImage='data:image/png;base64,'+ocrBase64;
+function ocrSender(h, changes={}) {return {...h.site,url:ocrSeatURL,...changes};}
+
+test('trusted extension OCR status and health work without a task and health uses the real client contract', async () => {
+  const h=harness(null,{ocrPermission:true});
+  assert.deepEqual(copy((await h.send({type:'OCR_STATUS'})).data),{enabled:true});
+  assert.equal(h.calls.fetch.length,0);
+  assert.deepEqual(copy((await h.send({type:'OCR_HEALTH'})).data),{ready:true,engine:'ddddocr'});
+  assert.equal(h.calls.fetch.length,1);
+  const request=h.calls.fetch[0];
+  assert.equal(request.url,'http://127.0.0.1:8765/health');
+  assert.equal(request.method,'GET');
+  assert.equal(request.credentials,'omit');
+  assert.equal(request.redirect,'error');
+  assert.deepEqual(request.headers,{'X-NOL-Extension-Id':'test-extension'});
+  assert.equal(h.calls.writes.length,0);
+  assert.equal(h.state(),undefined);
+});
+
+test('the current official seat mainframe can check status and recognize synthetic bytes without an active task', async () => {
+  const h=harness(null,{ocrPermission:true,tabUrl:ocrSeatURL});
+  const sender=ocrSender(h);
+  assert.equal((await h.send({type:'GET_CONTEXT'},sender)).data,null);
+  assert.deepEqual(copy((await h.send({type:'OCR_STATUS'},sender)).data),{enabled:true});
+  const recognized=await h.send({type:'OCR_RECOGNIZE',imageDataUrl:ocrImage},sender);
+  assert.equal(recognized.ok,true);
+  assert.equal(recognized.data.recognized,true);
+  assert.equal(recognized.data.candidate,'ABCDEF');
+  assert.equal(h.calls.fetch.length,1);
+  const request=h.calls.fetch[0];
+  assert.equal(request.url,'http://127.0.0.1:8765/recognize');
+  assert.equal(request.method,'POST');
+  assert.equal(request.credentials,'omit');
+  assert.equal(request.redirect,'error');
+  assert.deepEqual(request.headers,{'X-NOL-Extension-Id':'test-extension','Content-Type':'application/json'});
+  assert.deepEqual(JSON.parse(request.body),{image:ocrBase64});
+  assert.equal(h.calls.writes.length,0);
+  assert.equal(h.calls.scripts.length,0);
+  assert.equal(h.state(),undefined);
+  assert.equal(JSON.stringify((await h.send({type:'EXPORT_DIAGNOSTICS'})).data).includes(ocrBase64),false);
+});
+
+test('optional OCR permission is reported as disabled and prevents HTTP for site recognition or extension health', async () => {
+  const h=harness(null,{tabUrl:ocrSeatURL});
+  for(const sender of [h.ui,ocrSender(h)]) assert.deepEqual(copy((await h.send({type:'OCR_STATUS'},sender)).data),{enabled:false});
+  assert.equal((await h.send({type:'OCR_RECOGNIZE',imageDataUrl:ocrImage},ocrSender(h))).ok,false);
+  assert.equal((await h.send({type:'OCR_HEALTH'})).ok,false);
+  assert.equal(h.calls.fetch.length,0);
+  assert.equal(h.calls.writes.length,0);
+});
+
+test('site callers cannot invoke OCR health even from the current official seat mainframe', async () => {
+  const h=harness(null,{ocrPermission:true,tabUrl:ocrSeatURL});
+  const denied=await h.send({type:'OCR_HEALTH'},ocrSender(h));
+  assert.equal(denied.ok,false);
+  assert.match(denied.error,/扩展弹窗/);
+  assert.equal(h.calls.fetch.length,0);
+  assert.equal(h.calls.permissions.length,0);
+});
+
+test('OCR site routes reject unsupported origins, paths, credentials and non-mainframe senders before HTTP', async () => {
+  for(const change of [
+    {url:'http://tickets.interpark.com/onestop/seat'},
+    {url:'https://tickets.interpark.com.evil.test/onestop/seat'},
+    {url:'https://world.nol.com/onestop/seat'},
+    {url:'https://ticket.globalinterpark.com/onestop/seat'},
+    {url:'https://tickets.interpark.com:444/onestop/seat'},
+    {url:'https://tickets.interpark.com/onestop/seat/'},
+    {url:'https://tickets.interpark.com/onestop/schedule'},
+    {url:'https://tickets.interpark.com/waiting'},
+    {url:'https://synthetic-user:synthetic-pass@tickets.interpark.com/onestop/seat'},
+    {url:'chrome-extension://test-extension.evil/options.html'},
+    {url:'invalid'},
+    {frameId:1},
+    {frameId:undefined},
+    {tab:undefined}
+  ]) {
+    const h=harness(null,{ocrPermission:true,tabUrl:change.url || ocrSeatURL});
+    const sender=ocrSender(h,change);
+    for(const type of ['OCR_STATUS','OCR_RECOGNIZE']) assert.equal((await h.send({type,imageDataUrl:ocrImage},sender)).ok,false,JSON.stringify({change,type}));
+    assert.equal(h.calls.fetch.length,0);
+    assert.equal(h.calls.permissions.length,0);
+    assert.equal(h.calls.writes.length,0);
+  }
+});
+
+test('a changed, pending or closed seat tab cannot invoke OCR using a stale sender URL', async () => {
+  for(const change of [
+    (h) => {h.tabs.get(23).url='https://tickets.interpark.com/onestop/schedule';},
+    (h) => {h.tabs.get(23).url=ocrSeatURL+'?new=synthetic-session';},
+    (h) => {h.tabs.get(23).pendingUrl='https://tickets.interpark.com/onestop/schedule';},
+    (h) => {h.tabs.delete(23);}
+  ]) {
+    const h=harness(null,{ocrPermission:true,tabUrl:ocrSeatURL});
+    change(h);
+    for(const type of ['OCR_STATUS','OCR_RECOGNIZE']) assert.equal((await h.send({type,imageDataUrl:ocrImage},ocrSender(h))).ok,false);
+    assert.equal(h.calls.fetch.length,0);
+    assert.equal(h.calls.permissions.length,0);
+    assert.equal(h.calls.writes.length,0);
+  }
+});
+
+test('OCR candidates are returned but image, query and raw service data never enter run storage or diagnostics', async () => {
+  const seatURL=ocrSeatURL+'?ignored='+ocrSecret;
+  const h=harness(armedState({status:'waiting-manual',entryClaimed:true}),{ocrPermission:true,tabUrl:seatURL,ocrResponse:{ok:true,recognized:true,candidate:'ABCDEF',image:ocrImage,raw:ocrSecret,token:ocrSecret}});
+  const before=h.state();
+  const recognized=await h.send({type:'OCR_RECOGNIZE',imageDataUrl:ocrImage},ocrSender(h,{url:seatURL}));
+  assert.equal(recognized.data.candidate,'ABCDEF');
+  assert.deepEqual(Object.keys(recognized.data).sort(),['candidate','reason','recognized']);
+  assert.deepEqual(h.state(),before);
+  assert.equal(h.calls.writes.length,0);
+  assert.equal(h.calls.messages.length,0);
+  assert.equal(h.state().run.events.length,0);
+  const diagnostic=(await h.send({type:'EXPORT_DIAGNOSTICS'})).data;
+  for(const value of [ocrImage,ocrBase64,ocrSecret,'ABCDEF']) {
+    assert.equal(JSON.stringify(recognized).includes(value),value==='ABCDEF');
+    assert.equal(JSON.stringify(diagnostic).includes(value),false);
+    assert.equal(JSON.stringify(h.calls.writes).includes(value),false);
+  }
+});
+
+test('malformed site image data never reaches permissions or HTTP and does not change a run', async () => {
+  const h=harness(armedState(),{ocrPermission:true,tabUrl:ocrSeatURL});
+  const before=h.state();
+  for(const imageDataUrl of [null,'', 'https://example.test/image.png','data:image/svg+xml;base64,AAEC','data:image/png;base64,AAA']) {
+    assert.equal((await h.send({type:'OCR_RECOGNIZE',imageDataUrl},ocrSender(h))).ok,false);
+  }
+  assert.deepEqual(h.state(),before);
+  assert.equal(h.calls.permissions.length,0);
+  assert.equal(h.calls.fetch.length,0);
+  assert.equal(h.calls.writes.length,0);
+});
+
+test('OCR HTTP, oversized response and raw local failure messages remain bounded safe errors without writes', async () => {
+  for(const change of [{ocrHTTP:403},{ocrText:' '.repeat(4097)},{ocrText:ocrSecret},{ocrFetchError:new Error(ocrSecret+' redirect refused')}]) {
+    const h=harness(null,{ocrPermission:true,tabUrl:ocrSeatURL,...change});
+    const failure=await h.send({type:'OCR_RECOGNIZE',imageDataUrl:ocrImage},ocrSender(h));
+    assert.equal(failure.ok,false);
+    assert.equal(JSON.stringify(failure).includes(ocrSecret),false);
+    assert.equal(JSON.stringify(failure).includes(ocrBase64),false);
+    assert.equal(h.calls.fetch.length,1);
+    assert.equal(h.calls.writes.length,0);
+    assert.equal(h.state(),undefined);
+  }
 });

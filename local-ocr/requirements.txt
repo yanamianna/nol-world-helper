@@ -1,0 +1,3 @@
+# Official PyPI metadata checked on 2026-10-08.
+ddddocr==1.6.1
+Pillow==12.3.0

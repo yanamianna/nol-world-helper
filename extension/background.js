@@ -1,6 +1,22 @@
 'use strict';
-importScripts('core.js', 'entry-api.js', 'navigation.js', 'adapters/nol.js', 'adapters/global.js');
+importScripts('core.js', 'entry-api.js', 'navigation.js', 'adapters/nol.js', 'adapters/global.js', 'ocr-client.js');
 const H = globalThis.NolHelper;
+let localOCR;
+async function handleOCR(message,sender) {
+  if(!trusted(sender)) {
+    let page;
+    try {page=new URL(sender.url);} catch {throw new Error('当前页面无法使用验证码辅助。');}
+    if(sender.frameId!==0 || !sender.tab || page.protocol!=='https:' || page.hostname!=='tickets.interpark.com' || page.port || page.username || page.password || page.pathname!=='/onestop/seat') throw new Error('仅正式选座主页面可以使用验证码辅助。');
+    let tab;try {tab=await chrome.tabs.get(sender.tab.id);}catch {throw new Error('选座页面已关闭。');}
+    if((tab.pendingUrl||tab.url)!==sender.url) throw new Error('选座页面已经变化，请重新检查。');
+    if(message.type==='OCR_HEALTH') throw new Error('请从扩展弹窗检查本机服务。');
+  }
+  localOCR ||= H.localOCR.create(chrome,fetch);
+  if(message.type==='OCR_STATUS') return {enabled:await localOCR.enabled()};
+  if(message.type==='OCR_HEALTH') return localOCR.health();
+  if(message.type==='OCR_RECOGNIZE') return localOCR.recognize(message.imageDataUrl);
+  throw new Error('未知识别操作。');
+}
 const KEY = 'nolHelperState';
 const HOSTS = new Set(['world.nol.com', 'tickets.interpark.com', 'ticket.globalinterpark.com']);
 const TERMINAL = new Set(['stopped', 'payment', 'missed']);
@@ -226,6 +242,7 @@ async function handle(message,sender) {
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   // Network reads and the interactive page verifier do not hold the state lock.
   const work=(async()=>{
+    if (['OCR_STATUS','OCR_HEALTH','OCR_RECOGNIZE'].includes(message?.type)) return handleOCR(message,sender);
     if (message?.type==='API_ENTRY') return runEntry(message,sender);
     if (message?.type==='READ_PRODUCT') {if(!trusted(sender)) throw new Error('无权限');return fetchProduct(message.url);}
     if (message?.type==='SAVE_TASK' || message?.type==='ARM') {

@@ -32,6 +32,7 @@ function element(textContent='', selections={}, attributes={}) {
     querySelectorAll(selector) { return this.selections[selector] || []; },
     getAttribute(name) { return this.attributes[name] ?? null; },
     getClientRects() { return [{width:100,height:30}]; },
+    closest(selector) { for(let node=this;node;node=node.parentElement) if(node.selector===selector) return node; return null; },
     click() { throw new Error('read-only booking adapter cannot click'); }
   };
 }
@@ -45,12 +46,18 @@ function fixture({captcha=true, url='https://tickets.interpark.com/onestop/seat'
   const input = element('', {}, {placeholder:'請輸入畫面的文字 (不區分大小寫)'});
   Object.defineProperty(input, 'value', {get() { throw new Error('CAPTCHA value must not be read'); },set() { throw new Error('CAPTCHA value must not be written'); }});
   const button = element('完成輸入');
-  const layer = element('', {[selectors.heading]:[heading],[selectors.input]:[input],button:[button]});
+  const layer = element('', {[selectors.heading]:[heading],[selectors.input]:[input]});
+  const content = element('', {':scope > div.ModalCaptchaText_layerWrap__jn1bV':[layer]});
+  const footer = element('', {button:[button]});
+  const layout = element('', {':scope > div.ModalLayout_content__Zm2NK':[content],':scope > footer.ModalLayout_footer__88ZwY':[footer]});
+  layout.selector='div.ModalLayout_innerWrap__c8kxP';
+  layer.parentElement=content;content.parentElement=layout;footer.parentElement=layout;
+  heading.parentElement=layer;input.parentElement=layer;button.parentElement=footer;
   const doc = element('', {[selectors.title]:[title],[selectors.schedule]:[schedule],[selectors.image]:[image],[selectors.layer]:captcha?[layer]:[]});
   doc.location = {href:url, reload() { throw new Error('read-only adapter cannot reload'); }};
   doc.defaultView = {getComputedStyle(node) { return node.style; }};
   const ctx = {task:{productName,goodsCode:'26013793',placeCode:'26001167',...task}, requestEntry() { throw new Error('seat observation cannot enter'); }};
-  return {doc,ctx,title,schedule,image,heading,input,button,layer};
+  return {doc,ctx,title,schedule,image,heading,input,button,layer,content,footer,layout};
 }
 
 function expiredDialog(f) {
@@ -237,8 +244,24 @@ test('visible challenge controls require the actual observed labels and unique i
     f=>{f.layer.selections[selectors.input]=[f.input,f.input];},
     f=>{f.input.getClientRects=()=>[];},
     f=>{f.button.textContent='Next';},
-    f=>{f.layer.selections.button=[f.button,f.button];},
+    f=>{f.footer.selections.button=[f.button,f.button];},
     f=>{f.doc.selections[selectors.layer]=[f.layer,f.layer];}
+  ]) {
+    const f=fixture();change(f);
+    assert.equal(global.inspect(f.doc,f.ctx).code,'SEAT_DOM_UNVERIFIED');
+    assert.equal(global.step(f.doc,f.ctx).status,'manual');
+  }
+});
+
+test('CAPTCHA completion belongs to the observed sibling footer in the same layout', () => {
+  const global=adapter();
+  for(const change of [
+    f=>{f.layout.selector='div.UnknownModal';},
+    f=>{f.layout.selections[':scope > div.ModalLayout_content__Zm2NK']=[];},
+    f=>{f.content.selections[':scope > div.ModalCaptchaText_layerWrap__jn1bV']=[];},
+    f=>{f.layout.selections[':scope > footer.ModalLayout_footer__88ZwY']=[f.footer,f.footer];},
+    f=>{f.footer.hidden=true;},
+    f=>{f.footer.selections.button=[];f.layer.selections.button=[f.button];}
   ]) {
     const f=fixture();change(f);
     assert.equal(global.inspect(f.doc,f.ctx).code,'SEAT_DOM_UNVERIFIED');
