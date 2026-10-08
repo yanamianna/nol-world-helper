@@ -22,8 +22,8 @@
   function resumeState(run) {
     if (!run || !['paused', 'waiting-manual'].includes(run.status)) return { available: false, hint: '' };
     if (run.navigationErrorCode) return { available: false, hint: '官网页面连接失败。请检查官网状态，停止后重新启动任务；不会重新提交入场接口。' };
-    if (!run.entrySubmitted && (run.entryClaimed || run.apiDispatched || run.entryAttempted)) return { available: false, hint: '入场尚未确认成功。请检查官网状态，停止后重新启动任务；此处不会重试入场。' };
-    if (run.entrySubmitted) return { available: true, label: '继续观察', hint: '只继续观察官方购票页面，不会重新验证或再次提交入场接口。' };
+    if (!run.entrySubmitted && !run.queueObserved && (run.entryClaimed || run.apiDispatched || run.entryAttempted)) return { available: false, hint: '入场尚未确认成功。请检查官网状态，停止后重新启动任务；此处不会重试入场。' };
+    if (run.entrySubmitted || run.queueObserved) return { available: true, label: '继续观察', hint: '只继续观察官方购票页面，不会重新验证或再次提交入场接口。' };
     if (!Number.isFinite(Date.parse(run.openAt)) || Date.parse(run.openAt) <= Date.now()) return { available: false, hint: '触发时间已过或无法确认。请先停止任务，再检查官网并重新启动；扩展不会补发入场请求。' };
     return { available: true, label: '继续值守', hint: '继续等待官网开售时间，尚未启动入场。' };
   }

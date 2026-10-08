@@ -109,7 +109,7 @@ async function runEntry(message,sender) {
   const safe={submitted:result.submitted===true,code:codes.has(result.code)?result.code:'ENTRY_RESULT_UNKNOWN'};
   await serialize(async()=>{
     const s=await read(),r=s.run;if (!r || r.id!==payload.runId) return;
-    if (TERMINAL.has(r.status) || r.status==='paused' || r.navigationErrorCode) return;
+    if (TERMINAL.has(r.status) || r.status==='paused' || r.navigationErrorCode || r.queueObserved) return;
     r.entryAttempted=safe.submitted;r.entrySubmitted=safe.submitted && safe.code==='ENTRY_REDIRECTING';r.entryResultCode=safe.code;
     if (!TERMINAL.has(r.status) && r.status!=='paused') {
       r.status=r.entrySubmitted?'running':'waiting-manual';
@@ -180,9 +180,25 @@ async function handle(message,sender) {
     case 'PAGE_STATE':
       if(message.runId!==c.run.id || ['paused','missed','stopped','payment'].includes(c.run.status)) return false;
       if(!['waiting','manual','payment','progress'].includes(message.status)) throw new Error('未知页面状态');
+      if(message.code==='WAITING_QUEUE_VERIFIED') {
+        const page=new URL(sender.url),normalize=value=>typeof value==='string'?value.normalize('NFKC').replace(/\s+/gu,'').toUpperCase():'';
+        if(message.status!=='waiting' || message.verified!==true || !c.run.entryClaimed || page.hostname!=='tickets.interpark.com' || page.pathname!=='/waiting' || !normalize(c.task.productName) || normalize(message.productName)!==normalize(c.task.productName) || !Number.isSafeInteger(message.position) || message.position<=0 || !Number.isSafeInteger(message.totalWaiting) || message.totalWaiting<message.position) return false;
+        // An old queue document must not clear a newer navigation failure.
+        // These comparisons remain in memory; no URL or document ID is stored.
+        let currentTab,currentFrame;
+        try {
+          currentTab=await chrome.tabs.get(sender.tab.id);
+          if(sender.documentId) currentFrame=await chrome.webNavigation.getFrame({tabId:sender.tab.id,frameId:0});
+        } catch {return false;}
+        if((currentTab.pendingUrl || currentTab.url)!==sender.url || sender.documentId && currentFrame?.documentId!==sender.documentId) return false;
+        c.run.queueObserved=true;c.run.queuePosition=message.position;c.run.queueTotal=message.totalWaiting;c.run.queueObservedAt=Date.now();
+        c.run.navigationErrorCode=null;c.run.navigationErrorHost=null;c.run.status='running';
+        record(c.run,'正在官方排队',`我的等候顺位 ${message.position.toLocaleString('en-US')}，当前等候人数 ${message.totalWaiting.toLocaleString('en-US')}。请保持当前页面，刷新或重新进入会重置顺位。`);
+        await write(s);return true;
+      }
       // A generic page inspection cannot finish verification or erase its failure.
       // Payment is still a terminal stop if the user reaches it manually.
-      if((c.run.navigationErrorCode || c.run.apiDispatched && !c.run.entrySubmitted) && message.status!=='payment') return false;
+      if((c.run.navigationErrorCode || c.run.apiDispatched && !c.run.entrySubmitted && !c.run.queueObserved) && message.status!=='payment') return false;
       if(message.status==='payment') {c.run.status='payment';record(c.run,'已到付款页','扩展已停止，请自行检查并付款');await clearAlarms(c.run);}
       else if(message.status==='manual') {c.run.status='waiting-manual';record(c.run,'需要人工操作',String(message.reason || '页面尚未适配，请人工接管').slice(0,200));}
       else if(c.run.entryClaimed) {c.run.status='running';record(c.run,'等待网站处理',String(message.reason || '').slice(0,200));}
@@ -190,14 +206,14 @@ async function handle(message,sender) {
     case 'HEARTBEAT': c.run.heartbeatAt=Date.now(); await chrome.storage.local.set({[KEY]:s}); return true;
     case 'PAUSE':
       if(!s.run || TERMINAL.has(s.run.status)) return false;
-      if(s.run.apiDispatched && !s.run.entrySubmitted && !s.run.entryResultCode) s.run.entryResultCode='ENTRY_CANCELLED';
-      s.run.status='paused';record(s.run,'已暂停',s.run.navigationErrorCode ? s.run.reason : s.run.apiDispatched && !s.run.entrySubmitted ? entryReason(s.run.entryResultCode) : ui?'由你暂停任务':String(message.reason || '页面状态变化，需要检查').slice(0,200));await write(s);void cancelEntry(s.run);return true;
+      if(s.run.apiDispatched && !s.run.entrySubmitted && !s.run.queueObserved && !s.run.entryResultCode) s.run.entryResultCode='ENTRY_CANCELLED';
+      s.run.status='paused';record(s.run,'已暂停',s.run.navigationErrorCode ? s.run.reason : s.run.apiDispatched && !s.run.entrySubmitted && !s.run.queueObserved ? entryReason(s.run.entryResultCode) : ui?'由你暂停任务':String(message.reason || '页面状态变化，需要检查').slice(0,200));await write(s);void cancelEntry(s.run);return true;
     case 'RESUME': {
       if(!s.run || !['paused','waiting-manual'].includes(s.run.status)) throw new Error('没有可继续的任务');
       if(s.run.navigationErrorCode) throw new Error('官方购票页面连接失败，请检查官网状态，停止后重新启动任务；不会重新提交入场接口。');
-      if(s.run.entryClaimed && !s.run.entrySubmitted) throw new Error((s.run.entryResultCode ? entryReason(s.run.entryResultCode) : '入场尚未确认成功，请检查官网状态。') + ' 此任务不能恢复入场，请停止后重新启动；不会自动提交。');
+      if(s.run.entryClaimed && !s.run.entrySubmitted && !s.run.queueObserved) throw new Error((s.run.entryResultCode ? entryReason(s.run.entryResultCode) : '入场尚未确认成功，请检查官网状态。') + ' 此任务不能恢复入场，请停止后重新启动；不会自动提交。');
       if(!s.run.entryClaimed && Date.parse(s.run.openAt)<=Date.now()) throw new Error('触发时间已过，请停止后使用“立即开始”');
-      s.run.status=s.run.entryClaimed?'running':'armed';record(s.run,'继续观察',s.run.entrySubmitted?'仅继续观察官方购票页面，不会重新验证或再次提交入场接口。':'继续等待开售时间，尚未启动购票入口。');await write(s);return true;
+      s.run.status=s.run.entryClaimed?'running':'armed';record(s.run,'继续观察',s.run.entrySubmitted || s.run.queueObserved?'仅继续观察官方购票页面，不会重新验证或再次提交入场接口。':'继续等待开售时间，尚未启动购票入口。');await write(s);return true;
     }
     case 'STOP':
       if(s.run){await clearAlarms(s.run);s.run.status='stopped';record(s.run,'已停止','停止扩展不会取消网站中已有订单或队列');await write(s);void cancelEntry(s.run);}return true;

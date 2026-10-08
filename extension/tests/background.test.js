@@ -39,7 +39,7 @@ function harness(initial = armedState(), options = {}) {
   }
   const database = initial === null ? {} : { nolHelperState: copy(initial) };
   const calls = { fetch: [], writes: [], messages: [], clearAlarms: [], createAlarms: [], createTabs: [], accessLevels: [], scripts: [], options: 0 };
-  const tabs = new Map([[23, { id: 23, windowId: 5, active: options.active !== false, url: productUrl }]]);
+  const tabs = new Map([[23, { id: 23, windowId: 5, active: options.active !== false, url: options.tabUrl || productUrl }]]);
   let nextTab = 24;
   let nextId = 1;
   let resolveScriptStarted;
@@ -59,7 +59,7 @@ function harness(initial = armedState(), options = {}) {
       async openOptionsPage() { calls.options += 1; },
       onMessage: event(), onStartup: event(), onInstalled: event()
     },
-    webNavigation: {onErrorOccurred: event()},
+    webNavigation: {onErrorOccurred: event(),async getFrame() {return {documentId:options.documentId};}},
     tabs: {
       async create(value) { const tab = { id: nextTab++, windowId: 5, ...value }; tabs.set(tab.id, tab); calls.createTabs.push(copy(tab)); return copy(tab); },
       async get(id) { if (!tabs.has(id)) throw new Error('tab absent'); return copy(tabs.get(id)); },
@@ -676,4 +676,93 @@ test('cancelled, unrelated, unclaimed and missing-tab navigation errors have no 
   missing.tabs.delete(23);
   await missing.chrome.webNavigation.onErrorOccurred.emit({tabId:23,frameId:0,url:gate,error:'net::ERR_CONNECTION_TIMED_OUT'});
   assert.equal(missing.calls.writes.length,0);
+});
+
+const waitingProductName = 'JEONGHAN X JOSHUA JOURNEY INTO ［DREAMING］ - INCHEON';
+const waitingSite = {url:'https://tickets.interpark.com/waiting?key=SYNTHETIC_QUEUE_SECRET',id:'test-extension',tab:{id:23},frameId:0};
+const waitingMessage = {type:'PAGE_STATE',runId:'run-1',status:'waiting',verified:true,code:'WAITING_QUEUE_VERIFIED',productName:waitingProductName,position:42446,totalWaiting:48869,reason:'unsafe caller reason SYNTHETIC_QUEUE_SECRET'};
+function waitingState(overrides = {}) {
+  const initial=armedState({status:'waiting-manual',entryClaimed:true,apiDispatched:true,entryResultCode:'ENTRY_RESULT_UNKNOWN',...overrides});
+  initial.tasks[0].productName=waitingProductName;
+  return initial;
+}
+
+test('verified assigned queue observation resolves an unknown entry result without inventing an API submission', async () => {
+  const h=harness(waitingState({navigationErrorCode:'ERR_CONNECTION_TIMED_OUT',navigationErrorHost:'tickets.interpark.com'}),{tabUrl:waitingSite.url,documentId:'current-queue-document'});
+  assert.equal((await h.send(waitingMessage,{...waitingSite,documentId:'current-queue-document'})).data,true);
+  const r=h.state().run;
+  assert.equal(r.status,'running');
+  assert.equal(r.step,'正在官方排队');
+  assert.equal(r.queueObserved,true);
+  assert.equal(r.queuePosition,42446);
+  assert.equal(r.queueTotal,48869);
+  assert.equal(r.navigationErrorCode,null);
+  assert.equal(r.entrySubmitted,false);
+  assert.equal(r.entryResultCode,'ENTRY_RESULT_UNKNOWN');
+  assert.match(r.reason,/42,446/);
+  assert.equal(JSON.stringify(h.calls.writes).includes('SYNTHETIC_QUEUE_SECRET'),false);
+  assert.equal(h.calls.scripts.length,0);
+  assert.equal((await h.send({type:'PAUSE'})).ok,true);
+  const afterPause=h.calls.scripts.length;
+  assert.equal((await h.send({type:'RESUME'})).ok,true);
+  assert.equal(h.state().run.status,'running');
+  assert.equal(h.calls.scripts.length,afterPause,'resume only observes the existing queue');
+  const diagnostic=(await h.send({type:'EXPORT_DIAGNOSTICS'})).data;
+  assert.equal(diagnostic.run.queueObserved,true);
+  assert.equal(JSON.stringify(diagnostic).includes('SYNTHETIC_QUEUE_SECRET'),false);
+});
+
+test('queue observations reject other products, unverified structure, invalid counts and non-queue routes', async () => {
+  for(const change of [{productName:waitingProductName+' + Hotels'},{verified:false},{status:'progress'},{position:0},{position:48870},{totalWaiting:NaN},{position:'42446'}]) {
+    const h=harness(waitingState());
+    assert.equal((await h.send({...waitingMessage,...change},waitingSite)).data,false);
+    assert.equal(h.calls.writes.length,0);
+    assert.equal(h.state().run.queueObserved,undefined);
+  }
+  for(const url of ['https://tickets.interpark.com/gates/partner','https://ticket.globalinterpark.com/waiting']) {
+    const h=harness(waitingState());
+    assert.equal((await h.send(waitingMessage,{...waitingSite,url})).data,false);
+    assert.equal(h.calls.writes.length,0);
+  }
+  const h=harness(waitingState({entryClaimed:false}));
+  assert.equal((await h.send(waitingMessage,waitingSite)).data,false);
+  assert.equal(h.calls.writes.length,0);
+});
+
+test('queue counts update from the same product without interpreting booking percentage as inventory', async () => {
+  const h=harness(waitingState(),{tabUrl:waitingSite.url});
+  assert.equal((await h.send(waitingMessage,waitingSite)).data,true);
+  assert.equal((await h.send({...waitingMessage,productName:waitingProductName.normalize('NFKC').toLowerCase(),position:39816,totalWaiting:47845,bookingRate:99},waitingSite)).data,true);
+  assert.equal(h.state().run.queuePosition,39816);
+  assert.equal(h.state().run.queueTotal,47845);
+  assert.equal(h.state().run.bookingRate,undefined);
+  assert.equal(h.calls.scripts.length,0);
+});
+
+test('a late API callback cannot erase a queue confirmed in the actual assigned page', async () => {
+  let releaseScript;
+  const scriptBarrier=new Promise(resolve=>{releaseScript=resolve;});
+  const h=harness(waitingState({status:'running',apiDispatched:false}),{scriptBarrier,scriptResult:{submitted:false,code:'ENTRY_RESULT_UNKNOWN'}});
+  const entering=h.send({type:'API_ENTRY',runId:'run-1'},h.site);
+  await h.scriptStarted;
+  h.tabs.get(23).url=waitingSite.url;
+  assert.equal((await h.send(waitingMessage,waitingSite)).data,true);
+  releaseScript();await entering;
+  assert.equal(h.state().run.status,'running');
+  assert.equal(h.state().run.step,'正在官方排队');
+  assert.equal(h.state().run.queueObserved,true);
+  assert.equal(h.state().run.queuePosition,42446);
+});
+
+test('a delayed queue message cannot clear a newer navigation or document failure', async () => {
+  for(const options of [{tabUrl:'https://tickets.interpark.com/gates/partner'},{tabUrl:waitingSite.url,documentId:'new-document'}]) {
+    const h=harness(waitingState({navigationErrorCode:'ERR_CONNECTION_TIMED_OUT'}),options);
+    assert.equal((await h.send(waitingMessage,{...waitingSite,documentId:'old-document'})).data,false);
+    assert.equal(h.state().run.navigationErrorCode,'ERR_CONNECTION_TIMED_OUT');
+    assert.equal(h.calls.writes.length,0);
+  }
+  const h=harness(waitingState({navigationErrorCode:'ERR_CONNECTION_TIMED_OUT'}),{tabUrl:waitingSite.url});
+  h.tabs.get(23).pendingUrl='https://tickets.interpark.com/gates/partner';
+  assert.equal((await h.send(waitingMessage,waitingSite)).data,false);
+  assert.equal(h.calls.writes.length,0);
 });
