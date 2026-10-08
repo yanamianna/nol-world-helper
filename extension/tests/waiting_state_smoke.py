@@ -74,7 +74,7 @@ with sync_playwright() as p:
     ''')
     now = datetime.now(timezone.utc)
     opening, end = (now-timedelta(minutes=5)).isoformat(), (now+timedelta(days=1)).isoformat()
-    state = {'tasks':[{'id':'qa-waiting-task','name':'QA 官方队列只读观察','productName':PRODUCT,
+    state = {'tasks':[{'id':'qa-waiting-task','name':'QA 官方队列只读观察','kind':'ticket','productName':PRODUCT,
                        'openAt':opening,'officialEndAt':end,'openAtSource':'official','stage':'general'}],
              'profiles':[], 'run':{'id':'qa-waiting-run','taskId':'qa-waiting-task','tabId':tab_id,
                                    'status':'waiting-manual','openAt':opening,'entryClaimed':True,'apiDispatched':True,

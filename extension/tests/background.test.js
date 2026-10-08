@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const extension = path.resolve(__dirname, '..');
 const baseTime = Date.parse('2026-10-07T11:00:00.000Z');
-const productUrl = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013792';
+const productUrl = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013793';
 const html = fs.readFileSync(path.join(__dirname, 'fixtures/product.html'), 'utf8');
 const runtime = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/product-runtime.json'), 'utf8'));
 const capturedSales = runtime.responses.find((response) => response.url.includes('/goods/salesinfo?')).json;
@@ -19,7 +19,7 @@ function profile() {
 }
 
 function task(id = 'task-1', openAt = baseTime) {
-  return { id, name: 'fixture task', productUrl, goodsCode: '26013792', placeCode: '26001167', productName: '', kind: 'package', stage: 'general', openAt: new Date(openAt).toISOString(), openAtSource: 'official', officialEndAt: '2026-10-31T02:00:59.000Z', quantity: 1, maxTotal: 2000000, currency: 'KRW', profileId: 'profile-1', alternatives: [{ date: '2026-10-30', time: '19:00', packageLabel: 'INSPIRE Entertainment Resort (2 People)', seatGrade: '1', priceGrade: 'U1', people: 2, zones: [] }] };
+  return { id, name: 'fixture task', productUrl, goodsCode: '26013793', placeCode: '26001167', productName: '', kind: 'ticket', stage: 'general', openAt: new Date(openAt).toISOString(), openAtSource: 'official', officialEndAt: '2026-10-31T02:00:59.000Z', quantity: 1, maxTotal: 2000000, currency: 'KRW', profileId: 'profile-1', alternatives: [{ date: '2026-10-30', time: '19:00', gradeLabel: '测试指定席', seatGrade: 'SYNTHETIC_A', priceGrade: 'SYNTHETIC_P1', zones: [] }] };
 }
 
 function armedState(overrides = {}) {
@@ -220,17 +220,18 @@ test('delete-all removes contacts and gives the existing content script no run c
   assert.ok(h.calls.messages.some((message) => message.tabId === 23 && message.value.type === 'CONTEXT_CHANGED'));
 });
 
-test('public product reads use only captured public data, omit credentials and never return saved contacts', async () => {
+test('ordinary product reads use the marked synthetic fixture and public sales data, omit credentials and never return saved contacts', async () => {
   const h = harness();
   const before = h.state();
   const response = await h.send({ type: 'READ_PRODUCT', url: productUrl });
   assert.equal(response.ok, true);
-  assert.equal(response.data.goodsCode, '26013792');
-  assert.equal(response.data.prices.length, 24);
+  assert.equal(response.data.goodsCode, '26013793');
+  assert.equal(response.data.prices.length, 1);
+  assert.equal(Object.hasOwn(response.data.prices[0], 'people'), false);
   assert.equal(response.data.opening.general, '2026-10-12T11:00:00.000Z');
   assert.equal(response.data.opening.generalEnd, '2026-10-31T02:00:59.000Z');
   assert.equal(response.data.presaleChoices.length, 1);
-  assert.equal(response.data.presaleChoices[0].seq, '170194');
+  assert.equal(response.data.presaleChoices[0].seq, '169939');
   assert.equal(response.data.presaleChoices[0].openAt, '2026-10-08T11:00:00.000Z');
   assert.equal(response.data.presaleChoices[0].endAt, '2026-10-08T14:59:00.000Z');
   const serialized = JSON.stringify(response.data);
@@ -244,6 +245,43 @@ test('public product reads use only captured public data, omit credentials and n
     assert.equal(request.redirect, 'error');
     assert.equal(Object.keys(request.headers).some((name) => /cookie|authorization/i.test(name)), false);
     assert.equal(/users\/|token|waiting|gates\//.test(request.url), false);
+  }
+});
+
+test('obsolete task types cannot save or arm and never read products or open a tab', async () => {
+  for(const kind of ['package','unknown',undefined]) {
+    const initial=armedState({status:'stopped'});initial.tasks[0].kind=kind;
+    const h=harness(initial);
+    for(const message of [{type:'SAVE_TASK',task:initial.tasks[0]},{type:'ARM',taskId:'task-1'}]) {
+      const reply=await h.send(message);assert.equal(reply.ok,false);assert.match(reply.error,/仅支持普通票/);
+    }
+    assert.equal(h.calls.fetch.length,0);assert.equal(h.calls.createTabs.length,0);assert.equal(h.calls.scripts.length,0);
+  }
+});
+
+test('an active obsolete task stops once, retains local data and cannot claim, resume or dispatch entry', async () => {
+  for(const status of ['armed','running','paused','waiting-manual']) {
+    const initial=armedState({status,entryClaimed:true,apiDispatched:true});initial.tasks[0].kind='package';
+    const h=harness(initial);
+    const result=await h.send({type:'GET_STATE'});
+    assert.equal(result.data.run.status,'stopped');assert.equal(h.state().run.events.length,1);
+    assert.equal(h.state().tasks[0].kind,'package');assert.deepEqual(h.state().profiles,initial.profiles);
+    assert.deepEqual(h.calls.clearAlarms,['warm:run-1','deadline:run-1','sale:run-1']);
+    assert.equal(h.calls.scripts.length,1);assert.equal(h.calls.scripts[0].func.name,'cancelOfficialEntry');
+    assert.equal((await h.send({type:'GET_CONTEXT'},h.site)).data,null);
+    for(const [message,sender] of [[{type:'CLAIM_ENTRY',runId:'run-1',visible:true,lastTick:baseTime},h.site],[{type:'API_ENTRY',runId:'run-1'},h.site],[{type:'RESUME'},h.ui]]) assert.equal((await h.send(message,sender)).ok,false);
+    await h.send({type:'GET_STATE'});await h.chrome.alarms.onAlarm.emit({name:'sale:run-1'});
+    assert.equal(h.calls.writes.length,1);assert.equal(h.calls.fetch.length,0);assert.equal(h.calls.createTabs.length,0);assert.equal(h.calls.scripts.length,1);
+  }
+});
+
+test('identified non-ordinary product pages are rejected before sales reads or task creation', async () => {
+  const name='JEONGHAN X JOSHUA JOURNEY INTO ［DREAMING］ - INCHEON';
+  for(const replacement of ['［Play＆Stay］'+name,name+' + Hotels','Stay and Play '+name]) {
+    const h=harness(armedState({status:'stopped'}),{productHtml:html.replace(name,replacement)});
+    const result=await h.send({type:'READ_PRODUCT',url:productUrl});
+    assert.equal(result.ok,false);assert.match(result.error,/仅支持普通公演票/);
+    assert.equal(h.calls.fetch.length,1);assert.equal(h.calls.createTabs.length,0);assert.equal(h.calls.writes.length,0);
   }
 });
 
@@ -379,7 +417,7 @@ test('API entry rejects wrong callers, unclaimed runs, paused tasks, early times
     [{status: 'paused', entryClaimed: true}, {}, {}, {}],
     [{status: 'stopped', entryClaimed: true}, {}, {}, {}],
     [{entryClaimed: true, status: 'running'}, {now: baseTime - 1}, {}, {}],
-    [{entryClaimed: true, status: 'running'}, {}, {url: productUrl.replace('26013792', '26013793')}, {}],
+    [{entryClaimed: true, status: 'running'}, {}, {url: productUrl.replace('26013793', '99999990')}, {}],
     [{entryClaimed: true, status: 'running'}, {}, {frameId: 1}, {}],
     [{entryClaimed: true, status: 'running'}, {}, {}, {runId: 'not-the-run'}]
   ]) {
@@ -476,7 +514,7 @@ test('pending verification ignores page polls and cancellation remains final eve
 test('resume only observes after confirmed entry and never dispatches entry again', async () => {
   const h = harness(armedState({status: 'running', entryClaimed: true}));
   await h.send({type: 'API_ENTRY', runId: 'run-1'}, h.site);
-  const gateSender = {...h.site, url: 'https://tickets.interpark.com/gates/zh/global/26013792'};
+  const gateSender = {...h.site, url: 'https://tickets.interpark.com/gates/zh/global/26013793'};
   assert.equal((await h.send({type: 'PAGE_STATE', runId: 'run-1', status: 'manual', reason: '人工完成预约页面验证'}, gateSender)).data, true);
   assert.equal((await h.send({type: 'RESUME'})).ok, true);
   assert.equal(h.state().run.status, 'running');

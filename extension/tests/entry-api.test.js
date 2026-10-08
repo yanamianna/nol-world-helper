@@ -11,13 +11,13 @@ const exportsContext = vm.createContext({});
 vm.runInContext(source, exportsContext);
 const entrySource = '(' + exportsContext.NolHelper.officialEntry.toString() + ')';
 const cancelSource = '(' + exportsContext.NolHelper.cancelOfficialEntry.toString() + ')';
-const productURL = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013792';
+const productURL = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013793';
 const baseTime = Date.parse('2026-10-12T11:00:00Z');
 const captchaSecret = 'MOCK_VERIFICATION_SECRET';
 const accessSecret = 'MOCK_PARTNER_ACCESS_SECRET';
 const refreshSecret = 'MOCK_PARTNER_REFRESH_SECRET';
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const payload = (overrides = {}) => ({ runId: 'run-one', goodsCode: '26013792', placeCode: '26001167', openAt: baseTime, endAt: baseTime + 600000, ...overrides });
+const payload = (overrides = {}) => ({ runId: 'run-one', goodsCode: '26013793', placeCode: '26001167', openAt: baseTime, endAt: baseTime + 600000, ...overrides });
 
 function harness(options = {}) {
   const clock = { now: baseTime };
@@ -87,7 +87,7 @@ test('serialized entry rejects wrong URL, product, dates and background page wit
   for (const [options, config, code] of [
     [{ url: productURL.replace('https:', 'http:') }, payload(), 'ENTRY_PAGE_MISMATCH'],
     [{ url: productURL.replace('world.nol.com', 'world.nol.com.evil.test') }, payload(), 'ENTRY_PAGE_MISMATCH'],
-    [{}, payload({ goodsCode: '26013793' }), 'ENTRY_PAGE_MISMATCH'],
+    [{}, payload({ goodsCode: '99999990' }), 'ENTRY_PAGE_MISMATCH'],
     [{}, payload({ openAt: baseTime + 1 }), 'ENTRY_BEFORE_OPEN'],
     [{}, payload({ openAt: baseTime - 1, endAt: baseTime }), 'ENTRY_SALE_ENDED'],
     [{}, payload({ endAt: '2026-10-12 20:00:00' }), 'ENTRY_INVALID_CONFIG'],
@@ -106,7 +106,7 @@ test('normal SDK callback submits once, follows exact official gate and exposes 
   assert.equal(postCount(h), 0, 'wait for actual challenge completion');
   assert.deepEqual(h.calls.requests[0].headers, { 'X-Service-Origin': 'global', 'X-Triple-User-Lang': 'zh-CN' });
   assert.equal(h.calls.requests[0].credentials, 'same-origin');
-  assert.match(h.calls.requests[0].url, /goods_code=26013792&place_code=26001167$/);
+  assert.match(h.calls.requests[0].url, /goods_code=26013793&place_code=26001167$/);
   assert.equal(h.calls.requests[1].url, 'https://world.nol.com/api/users');
   const config = h.calls.widgets[0].config;
   assert.equal(config.sitekey, '0x4AAAAAACXBa0-HrwgZXh6u');
@@ -121,10 +121,10 @@ test('normal SDK callback submits once, follows exact official gate and exposes 
   const post = h.calls.requests.at(-1);
   assert.equal(post.url, 'https://world.nol.com/api/users/enter/token');
   assert.deepEqual(post.headers, { 'Content-Type': 'application/json' });
-  assert.deepEqual(JSON.parse(post.body), { goodsCode: '26013792', placeCode: '26001167', turnstileToken: captchaSecret });
+  assert.deepEqual(JSON.parse(post.body), { goodsCode: '26013793', placeCode: '26001167', turnstileToken: captchaSecret });
   const gate = new URL(h.calls.navigation[0]);
   assert.equal(gate.origin + gate.pathname, 'https://tickets.interpark.com/gates/partner');
-  assert.deepEqual(Object.fromEntries(gate.searchParams), { gc: '26013792', pc: '26001167', bc: '10965', cc: 'gates_global', lg: 'zh', partner_token: accessSecret, partner_token_r: refreshSecret, user_id: 'mock-user-id' });
+  assert.deepEqual(Object.fromEntries(gate.searchParams), { gc: '26013793', pc: '26001167', bc: '10965', cc: 'gates_global', lg: 'zh', partner_token: accessSecret, partner_token_r: refreshSecret, user_id: 'mock-user-id' });
   const exposed = JSON.stringify({ result, registryRuns: [...h.window.__nolWorldHelperEntryApiV1.runs], logs: h.calls.logs });
   for (const secret of [captchaSecret, accessSecret, refreshSecret]) assert.equal(exposed.includes(secret), false);
   assert.equal(h.calls.logs.length, 0);
@@ -180,7 +180,7 @@ test('cancel while waiting for verification removes the widget and never submits
 
 test('page identity and sale window are checked again after the human challenge', async () => {
   for (const mutation of [
-    (h) => { h.window.location.href = productURL.replace('26013792', '26013793'); },
+    (h) => { h.window.location.href = productURL.replace('26013793', '99999990'); },
     (h) => { h.clock.now = baseTime + 600000; },
     (h) => { h.document.visibilityState = 'hidden'; }
   ]) {

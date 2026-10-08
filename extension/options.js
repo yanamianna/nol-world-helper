@@ -2,10 +2,11 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const DEFAULT_PRODUCT = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013792';
+  const DEFAULT_PRODUCT = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013793';
   const statusLabels = { armed: '等待开售', running: '正在运行', 'waiting-manual': '等待人工接管', paused: '已暂停', missed: '错过触发时间', stopped: '已停止', payment: '已到付款页' };
   let state = { tasks: [], profiles: [], run: null, capabilities: [] };
   let taskId = null;
+  let unsupportedTask = false;
   let profileId = null;
   let metadata = null;
   let busySaving = false;
@@ -71,6 +72,7 @@
   }
   function money(value) { return Number(value).toLocaleString('zh-CN'); }
   function taskFromFields() {
+    if (unsupportedTask) throw new Error('此旧任务不是普通票任务，无法保存或启动。请新建普通票任务。');
     if (!openingIso()) throw new Error(openingStatus === 'selection-required' ? '请先选择与你的购票资格对应的官网预售窗口。' : '没有可用的官网开售时间，暂时无法保存或启动任务。请稍后重新读取。');
     if (!$('task-form').reportValidity()) return null;
     const url = new URL($('product-url').value.trim());
@@ -81,7 +83,7 @@
     const task = {
       id: taskId || crypto.randomUUID(), name: $('task-name').value.trim(), productUrl: url.toString(),
       goodsCode: path[2], placeCode: path[1], productName: metadata?.goodsName || state.tasks.find((item) => item.id === taskId && item.productUrl === url.toString())?.productName || '',
-      kind: $('task-kind').value, stage: $('task-stage').value, openAt: openingIso(),
+      kind: 'ticket', stage: $('task-stage').value, openAt: openingIso(),
       preSaleSeq: $('task-stage').value === 'presale' ? selectedPreSaleSeq : '', openAtSource: 'official',
       quantity: Number($('quantity').value), maxTotal: null, currency: 'KRW',
       profileId: $('task-profile').value, alternatives
@@ -103,7 +105,7 @@
   function renderLists() {
     const tasks = $('task-list');
     tasks.replaceChildren();
-    for (const task of state.tasks) tasks.append(listItem(task.name || '未命名任务', `${task.stage === 'presale' ? '先行开售' : '常规开售'} · ${localTime(task.openAt) || '未设置时间'}`, task.id === taskId, () => editTask(task)));
+    for (const task of state.tasks) tasks.append(listItem(task.name || '未命名任务', `${task.kind === 'ticket' ? (task.stage === 'presale' ? '先行开售' : '常规开售') : '不支持的旧任务'} · ${localTime(task.openAt) || '未设置时间'}`, task.id === taskId, () => editTask(task)));
     if (!state.tasks.length) tasks.append(textNode('p', '还没有任务。填写右侧表单后保存。', 'empty-state'));
     const profiles = $('profile-list');
     profiles.replaceChildren();
@@ -155,11 +157,12 @@
   function editTask(task, { read = true } = {}) {
     resetProductRead();
     taskId = task?.id || null;
+    unsupportedTask = Boolean(task && task.kind !== 'ticket');
+    $('unsupported-task').hidden = !unsupportedTask;
     metadata = task ? { goodsCode: task.goodsCode, placeCode: task.placeCode, goodsName: task.productName || task.name, prices: [] } : null;
     $('task-form').reset();
     $('task-name').value = task?.name || '';
     $('product-url').value = task?.productUrl || DEFAULT_PRODUCT;
-    $('task-kind').value = task?.kind || 'package';
     $('task-stage').value = task?.stage || 'general';
     selectedPreSaleSeq = String(task?.preSaleSeq || '');
     $('open-at').value = '';
@@ -172,7 +175,7 @@
     renderAlternatives(task?.alternatives?.length ? task.alternatives : [{}]);
     renderProductSummary(); renderLists(); updateStartButtons();
     $('task-profile').value = task?.profileId || '';
-    if (read) scheduleProductRead(0);
+    if (read && !unsupportedTask) scheduleProductRead(0);
   }
   function makeField(labelText, input, full = false) {
     const label = document.createElement('label');
@@ -216,29 +219,26 @@
       if (metadata?.playEndDate) date.max = metadata.playEndDate;
       const time = input('time', alternative.time || '', 'alt-time');
       grid.append(makeField('演出日期（韩国时间）', date), makeField('演出时间（可留空）', time));
-      const packageSelect = document.createElement('select'); packageSelect.className = 'alt-package-select';
-      packageSelect.append(new Option('读取商品后选择档位，也可手动填写', ''));
+      const gradeSelect = document.createElement('select'); gradeSelect.className = 'alt-grade-select';
+      gradeSelect.append(new Option('读取商品后选择档位，也可手动填写', ''));
       (metadata?.prices || []).forEach((price, priceIndex) => {
         const label = price.label || [price.seatGradeName, price.priceGradeName].filter(Boolean).join(' · ');
         const value = price.price ?? price.salesPrice;
-        packageSelect.append(new Option(`${label}${value != null ? ` · ${money(value)} KRW` : ''}`, String(priceIndex)));
-        if (String(price.seatGrade) === String(alternative.seatGrade) && String(price.priceGrade) === String(alternative.priceGrade)) packageSelect.value = String(priceIndex);
+        gradeSelect.append(new Option(`${label}${value != null ? ` · ${money(value)} KRW` : ''}`, String(priceIndex)));
+        if (String(price.seatGrade) === String(alternative.seatGrade) && String(price.priceGrade) === String(alternative.priceGrade)) gradeSelect.value = String(priceIndex);
       });
-      const packageLabel = input('text', alternative.packageLabel || '', 'alt-package-label'); packageLabel.placeholder = '例如：酒店 + 两人 Twin，或票档名称'; packageLabel.maxLength = 250;
-      const people = input('number', alternative.people || 1, 'alt-people'); people.min = '1'; people.max = '20'; people.step = '1'; people.required = true;
-      packageSelect.addEventListener('change', () => {
-        const price = packageSelect.value === '' ? null : metadata?.prices?.[Number(packageSelect.value)];
+      const gradeLabel = input('text', alternative.gradeLabel ?? alternative.packageLabel ?? '', 'alt-grade-label'); gradeLabel.placeholder = '例如：指定席'; gradeLabel.maxLength = 250;
+      gradeSelect.addEventListener('change', () => {
+        const price = gradeSelect.value === '' ? null : metadata?.prices?.[Number(gradeSelect.value)];
         card.dataset.seatGrade = price?.seatGrade || ''; card.dataset.priceGrade = price?.priceGrade || '';
         if (price) {
-          packageLabel.value = price.label || [price.seatGradeName, price.priceGradeName].filter(Boolean).join(' · ');
-          if (price.people) people.value = price.people;
+          gradeLabel.value = price.label || [price.seatGradeName, price.priceGradeName].filter(Boolean).join(' · ');
         }
         markDirty();
       });
-      grid.append(makeField('商品公开档位', packageSelect, true), makeField('套餐 / 票档名称', packageLabel), makeField('该档位人数', people));
+      grid.append(makeField('商品公开票档', gradeSelect, true), makeField('票档名称', gradeLabel, true));
       const zones = document.createElement('textarea'); zones.className = 'alt-zones'; zones.rows = 2; zones.value = (alternative.zones || []).join('，'); zones.placeholder = '按优先顺序，用逗号分隔；无偏好可留空';
       grid.append(makeField('座区优先顺序', zones, true));
-      if (alternative.seatGrade && $('task-kind').value === 'package') grid.append(textNode('p', `每份包含 ${alternative.people || 1} 人；数量按套餐份数计算。`, 'hint'));
       card.append(grid); container.append(card);
     });
     $('add-alternative').disabled = alternatives.length >= 20;
@@ -246,8 +246,8 @@
   function getAlternatives() {
     return [...$('alternatives').querySelectorAll('.alternative-card')].map((card) => ({
       date: card.querySelector('.alt-date').value, time: card.querySelector('.alt-time').value,
-      packageLabel: card.querySelector('.alt-package-label').value.trim(), seatGrade: card.dataset.seatGrade || '', priceGrade: card.dataset.priceGrade || '',
-      people: Number(card.querySelector('.alt-people').value), zones: card.querySelector('.alt-zones').value.split(/[,，\n]+/).map((zone) => zone.trim()).filter(Boolean)
+      gradeLabel: card.querySelector('.alt-grade-label').value.trim(), seatGrade: card.dataset.seatGrade || '', priceGrade: card.dataset.priceGrade || '',
+      zones: card.querySelector('.alt-zones').value.split(/[,，\n]+/).map((zone) => zone.trim()).filter(Boolean)
     }));
   }
   function markDirty() { $('task-saved').textContent = '有未保存更改'; updateStartButtons(); }
@@ -257,11 +257,8 @@
     const past = Number.isFinite(time) && time <= Date.now();
     $('arm-task').hidden = past;
     $('start-now').hidden = !past;
-    const packageTask = $('task-kind').value === 'package';
-    $('quantity-label').textContent = packageTask ? '套餐数量（份）' : '购票数量（张）';
-    $('quantity-hint').textContent = packageTask ? '每份人数在下方购票选择中填写。' : '数量须符合网站实际限购规则。';
     const available = Number.isFinite(time) && openingStatus === 'official';
-    for (const id of ['save-task', 'arm-task', 'start-now']) $(id).disabled = !available || busySaving;
+    for (const id of ['save-task', 'arm-task', 'start-now']) $(id).disabled = !available || busySaving || unsupportedTask;
     const source = openingStatus === 'reading' ? '正在从官网读取开售时间。' : openingStatus === 'selection-required' ? '官网公布了多个预售窗口，请先选择对应的窗口。' : openingStatus === 'error' ? '读取失败，请重新读取官网信息。' : '官网尚未公布所选阶段的有效开售时间。';
     $('open-at-hint').textContent = available ? `官网时间：北京 ${localTime(new Date(time).toISOString())} / 韩国 ${localTime(new Date(time).toISOString(), 'Asia/Seoul')}。保存和启动时会再次核对。` : `${source}没有官网时间时无法保存或启动。`;
     $('start-hint').textContent = past ? '官网显示已开售。点击「立即开始」请求官方入场接口；网站验证与排队仍须按官方流程继续，选场次、选座和下单由你接管。' : '到官网开售时间后请求官方入场接口。请提前完成登录及身份验证；选场次、选座和下单由你接管。';
@@ -277,10 +274,12 @@
   }
   function scheduleProductRead(delay = 600) {
     clearTimeout(productReadTimer);
+    if (unsupportedTask) return;
     try { NolHelper.parseProductUrl($('product-url').value.trim()); } catch { return; }
     productReadTimer = setTimeout(() => readProduct({ automatic: true }), delay);
   }
   async function readProduct({ automatic = false } = {}) {
+    if (unsupportedTask) return fail(new Error('此旧任务不是普通票任务，请新建普通票任务。'));
     clearTimeout(productReadTimer);
     const url = $('product-url').value.trim();
     try { NolHelper.parseProductUrl(url); } catch (error) { if (!automatic) fail(error); return; }

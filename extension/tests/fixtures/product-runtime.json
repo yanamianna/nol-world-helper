@@ -1,10 +1,11 @@
 {
+  "fixture": "Synthetic wrapper around anonymous public salesinfo captured for ordinary goods 26013793. No user/session data.",
   "responses": [
     {
-      "url": "https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?goodsCode=26013792&placeCode=26001167&bizCode=10965",
+      "url": "https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?goodsCode=26013793&placeCode=26001167&bizCode=10965",
       "json": {
         "data": {
-          "goodsCode": "26013792",
+          "goodsCode": "26013793",
           "placeCode": "26001167",
           "salesInfo": {
             "displayViewRateType": 0,
@@ -16,7 +17,40 @@
           },
           "preSalesInfo": [
             {
-              "goodsCode": "26013792",
+              "goodsCode": "26013793",
+              "placeCode": "26001167",
+              "preBookingKindCode": "I0005",
+              "preBookingKindName": "타회원 선예매",
+              "bizCode": "10965",
+              "memberGrade": "Z",
+              "bookingOpenTime": "2026-10-08 10:00:00",
+              "bookingEndTime": "2026-10-08 10:00:00",
+              "bigo": "",
+              "seq": 169943,
+              "mobileYn": "N",
+              "limitType": "",
+              "limitCount": 0,
+              "limitPlaySeq": "N",
+              "authGroup": false,
+              "buttonName": "",
+              "authGroupSeq": 0,
+              "authGroupName": "",
+              "checkStartTime": "",
+              "checkEndTime": "",
+              "checkField1": "",
+              "checkFieldName1": "",
+              "checkField2": "",
+              "checkFieldName2": "",
+              "checkField3": "",
+              "checkFieldName3": "",
+              "checkField4": "",
+              "checkFieldName4": "",
+              "checkField5": "",
+              "checkFieldName5": "",
+              "createdAt": "2026-10-01 16:05:02"
+            },
+            {
+              "goodsCode": "26013793",
               "placeCode": "26001167",
               "preBookingKindCode": "I0007",
               "preBookingKindName": "팬클럽 선예매",
@@ -25,7 +59,7 @@
               "bookingOpenTime": "2026-10-08 20:00:00",
               "bookingEndTime": "2026-10-08 23:59:00",
               "bigo": "",
-              "seq": 170194,
+              "seq": 169939,
               "mobileYn": "N",
               "limitType": "",
               "limitCount": 0,
@@ -46,7 +80,7 @@
               "checkFieldName4": "",
               "checkField5": "",
               "checkFieldName5": "",
-              "createdAt": "2026-10-06 15:46:38"
+              "createdAt": "2026-10-01 16:05:02"
             }
           ],
           "preSalesTimeInfo": []

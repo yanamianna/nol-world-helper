@@ -1,94 +1,78 @@
-# NOL World 锁票请求与响应研究
+# NOL World 普通票锁座请求与响应研究
 
-核对日期：2026-10-08，当前扩展 v0.1.6。本文保留此前入口链路研究，并在文末补充正式 OneStop 选座页的新发现。源码研究只读取官方公开 HTML、JavaScript 和帮助资料；未执行锁票或订单请求。
+核对日期：2026-10-08，当前扩展 **v0.1.8**。研究对象为普通公演票，读取官方公开 HTML、JavaScript 和帮助资料，并区分源码实现与真实会话结果。当前没有执行锁座或订单请求。
 
-## 结论
+## 结论与证据范围
 
-可以通过官方前端源码定位请求的实现，也可以通过一次正常购票动作取得真实请求与响应。本轮已经从 NOL 商品页追到 Partner / Global 入场前端及正式 OneStop 选座页面，定位入场、排队、临时预选和完成选座接口；**仍未取得真实锁定成功回执**。最新后段研究见 [OneStop 技术研究](onestop-flow-research.md)。
+已从 NOL 商品页追踪到 Partner / Global 入场前端及正式 OneStop 选座应用，定位入场、排队、座位状态、临时预选与完成选择实现。**仍未取得真实锁定成功回执，也未将后段请求接入扩展。** 最新选座接口细节见 [OneStop 技术研究](onestop-flow-research.md)。
 
-目前不能仅用商品编号和档位编号直接锁库存。正式流程还需要当前账号会话、官方入场及排队结果、实际场次和选票状态。入口 token、排队地址、接口 HTTP 200 都不是锁票成功证明。
+商品编号加档位编号不足以直接锁库存，还需要正常账号会话、官方入场和排队结果、实际场次、逐座信息及选票状态。入场 token、排队地址、HTTP 200、本地座位高亮均不是锁座成功证明。
 
-TXT 与 JEONGHAN × JOSHUA 的 Play＆Stay 应研究酒店 / 人数档位的库存预留。官方说明确认它们的具体区与座位在保证等级内随机分配，不能将酒店档位作为实体座位编号。普通公演的指定席流程需要另行适配。
+## 入口链路的公开源码证据
 
-## 本轮新增的源码证据
+[NOL 商品客户端](https://world.nol.com/asset/kint5-ticket-web/_next/static/chunks/3mllq2af3oq3f.js) 包含公开价格及入场逻辑：检查账号票务状态，完成正常验证，提交同源入场 token 请求，再到官方 partner gate。商品页本身不是完整选座应用。
 
-### 1. 商品页不是完整的预约应用
-
-[NOL 商品客户端](https://world.nol.com/asset/kint5-ticket-web/_next/static/chunks/3mllq2af3oq3f.js) 包含公开价格和入场逻辑。已知流程读取账号票务状态，通过正常官方验证，再提交同源入场 token 请求，跳转到 tickets.interpark.com 的 Partner gate。这里没有已经确认的实时选票或锁定动作。
-
-### 2. Partner gate 的前端可以匿名读取
-
-2026-10-08，无 query、无登录凭据的 [Partner gate 页面](https://tickets.interpark.com/gates/partner) 返回 HTTP 200。页面直接引用 [DJd3ayxl.js](https://tickets.interpark.com/gates/assets/DJd3ayxl.js) 及静态模块。
-
-沿其实际引用有限递归下载了 32 个脚本，合计 2,859,372 字节；全部返回 200。没有猜测脚本名称，也没有请求其中的业务 API。主包注册了 Partner、Global、Ticket 路由，实际引用的路由模块包括：
+无 query、无登录凭据的 [Partner gate 页面](https://tickets.interpark.com/gates/partner) 返回 HTTP 200，引用 [DJd3ayxl.js](https://tickets.interpark.com/gates/assets/DJd3ayxl.js)。沿实际引用下载 32 个脚本，共 2,859,372 字节，全部返回 200；没有猜测脚本名或请求其中业务 API。主要路由及共享模块为：
 
 - [Cyr-bY_d.js](https://tickets.interpark.com/gates/assets/Cyr-bY_d.js)：Partner。
 - [ClL8pB67.js](https://tickets.interpark.com/gates/assets/ClL8pB67.js)：Global。
 - [CcgKLPc8.js](https://tickets.interpark.com/gates/assets/CcgKLPc8.js)：Ticket。
-- [DQK4bWWa.js](https://tickets.interpark.com/gates/assets/DQK4bWWa.js)：共享入场、排队与跳转逻辑。
+- [DQK4bWWa.js](https://tickets.interpark.com/gates/assets/DQK4bWWa.js)：共享入场、排队及跳转。
 
-### 3. 已定位的接口都是入场接口
+下表的响应字段仅表示客户端读取它，不表示已捕获真实账号响应；不同分支不能拼成已验证的单一路径。
 
-下面是源码静态证据；“响应字段”表示客户端会读取该字段，不表示已经捕获实际账号的响应。
-
-| 所在阶段 | 源码可见动作 | 客户端输入 / 读取结果 | 与锁票的关系 |
+| 阶段 | 源码可见动作 | 输入 / 读取结果 | 意义 |
 |---|---|---|---|
-| NOL 商品页 | GET /api/users/enter | 商品 / 场馆；读取账号票务及邮箱状态 | 账号检查 |
-| NOL 商品页 | POST /api/users/enter/token | 商品、场馆和正常验证凭据；读取入场凭据 | 进入 Partner gate，不能当作锁票 |
-| Partner 的 TOKEN_VERIFY 分支 | POST https://ent-bridge.interpark.com/x13_02/v1/bridge/tokenVerify，带 query | 普通 NOL bizCode 10965 走此分支；query 用 query-string.stringify，body 是官方 gate 参数的 JSON；客户端读取 data.returl | 核验入口并返回下一地址；returl 的实际值未取得 |
-| Global 会员检查 | GET https://tickets.interpark.com/api/ticket/v2/reserve-gate/member-info | query 为 goodsCode、channelCode；Global 使用 gp 渠道。后续从会员结果读取 memberCode、signature、secureData | 正常会员上下文，不能预先伪造 |
-| Global 商品检查 | GET https://tickets.interpark.com/api/ticket/v2/reserve-gate/goods-info | query 包含 goodsCode、placeCode、bizCode、passCode、lang 和 nc；读取商品、预售及认证规则 | 商品规则，不是可售座位列表 |
-| Global 路由 | POST https://ent-waiting-api.interpark.com/waiting/api/secure-url | 包含正常会员结果的 signature、secureData，以及 bizCode、lang、preSales、passCode、from；实际有场次上下文时包含 playDate、playSeq，空值删除；读取 redirectUrl | 官方入场 / 排队地址，不能当作库存确认 |
-| Global 最终跳转 | https://ticket.globalinterpark.com/Global/Play/Gate/CBTLoginGate.asp | query 中的 k 来自 memberCode，r 来自排队返回地址，另有 lng | 到实际预约系统的登录门 |
+| NOL 商品页 | GET `/api/users/enter` | 商品 / 场馆，读取账号票务及邮箱状态 | 账号检查 |
+| NOL 商品页 | POST `/api/users/enter/token` | 商品 / 场馆和正常验证凭据，读取入场凭据 | 进入 Partner gate，不是锁座 |
+| Partner TOKEN_VERIFY 分支 | POST `https://ent-bridge.interpark.com/x13_02/v1/bridge/tokenVerify` | 普通 NOL bizCode 10965 分支；query 经 query-string.stringify，body 为 gate 参数 JSON；读取 `data.returl` | 返回下一地址，实际 returl 未采样 |
+| Global 会员检查 | GET `https://tickets.interpark.com/api/ticket/v2/reserve-gate/member-info` | goodsCode / channelCode，gp 渠道；读取 memberCode / signature / secureData | 正常会员上下文 |
+| Global 商品检查 | GET `https://tickets.interpark.com/api/ticket/v2/reserve-gate/goods-info` | goodsCode / placeCode / bizCode / passCode / lang / nc，读取商品、预售及认证规则 | 商品规则，不是座位列表 |
+| Global 排队分支 | POST `https://ent-waiting-api.interpark.com/waiting/api/secure-url` | 正常会员结果及 bizCode / lang / preSales / passCode / from；有场次上下文时含 playDate / playSeq；读取 redirectUrl | 官方排队地址，不是库存确认 |
+| Global 最终跳转 | `https://ticket.globalinterpark.com/Global/Play/Gate/CBTLoginGate.asp` | k 来自 memberCode，r 来自排队地址，另有 lng | 正式预约系统登录门 |
 
-Global 分支的静态存在，不能证明当前 TXT 商品的 tokenVerify 运行结果一定按这一完整分支继续。需要正常运行时的 returl 和页面结果确认；报告不将不同分支拼成已经实测成功的单一路径。
+对源码明确引用的 CBTLoginGate.asp 做无参数匿名 GET，返回 HTTP 202、空正文。此前 Global 首页的 403 也不能证明任何锁座协议。研究没有修改请求去绕过挑战、伪造入场凭据或补造旧页面的 BookSeat / SeatCheck 地址。
 
-### 4. 前期未取得后段源码
+## 正式 OneStop 与真实页面观察
 
-对上述源码明确的 CBTLoginGate.asp 做无参数匿名 GET，本次返回 HTTP 202、空正文，没有获得预约 HTML 或进一步脚本引用。此前 Global 首页的 403 也不能用于推断具体锁票接口。没有修改请求去绕过挑战或伪造正常入场凭据。
+用户正常 Edge 会话手动进入 JJ 普通票 26013793。网络恢复后沿现有队列自动进入 `/onestop/schedule`，点击官网下一步到 `/onestop/seat`，看到默认 2026-10-30 韩国时间 19:00、座区图、倒计时和图片验证码。验证码未完成，随后会话到期。没有选座、确认、锁座、订单或付款；默认场次不是实验购买配置。[实际流程记录](selection-and-hold.md#已进入正式选场与选座页)。
 
-因此，当前还不知道锁票动作的真实 HTTP 方法、路径、请求体、业务成功码，以及冲突 / 部分成功 / 到期回执。报告不会根据历史 Interpark 页面名称补造 BookSeat 或 SeatCheck 地址。
+进一步匿名读取该页实际加载的 23 份官方 JS 与两份 SVG，定位 GraphQL 临时预选、REST 完成选座、取消预选、状态读取、冲突及前端到期处理。当前已知道客户端实现，仍缺正常选择动作的真实请求 / 响应及服务端确认语义。接口路径和字段以 [OneStop 技术研究](onestop-flow-research.md) 中的源码证据为准。
 
-## 已确认的锁定阶段语义
+## 锁定与时限
 
-[NOL 官方 FAQ](https://world.nol.com/en/my-info/faqs?selected-category=booking-payment) 的公开页面数据给出通用规则：选座通常最多 10 分钟；选座后进入价格步骤，通常暂留 7 分钟，超时释放。非指定席也有支付前时限，具体政策可能因商品改变。
+[NOL 官方 FAQ](https://world.nol.com/en/my-info/faqs?selected-category=booking-payment) 的公开数据描述通用规则：选座通常最多 10 分钟，选座后进入价格步骤通常暂留 7 分钟，超时释放。具体政策可能随商品变化，不能把通用时长硬编码为目标商品已确认的锁定期限。
 
-这表明需要重点观察“确认选择并进入价格步骤”的动作。高亮座位与服务端暂留必须分开；FAQ 的时长也不能硬编码成 TXT / JJ 套餐的锁定期限。实际期限以当前正式页面为准。
+需要观察“完成选择并进入价格步骤”的真实动作，区分临时预选、正式确认及页面倒计时。前端计时或高亮不能证明服务端实际接受了全部座位；锁定编号、有效期或释放结果未提供时保持未知。
 
-同一 FAQ 的 Play＆Stay 条目确认具体区与席位在所选等级内随机分配，在演出当天酒店取票时得知。[TXT 官方购买注意事项](https://ticketimage.interpark.com/260134832026/09/23/71a07352.jpg) 同样确认座位随机分配，且每个购买人每场限购一份套餐；[套餐说明](https://ticketimage.interpark.com/260134832026/09/23/ba1fbfa2.jpg) 确认一人商品含一张票，双人商品含连坐两张票。
+## 正常会话请求采样方法
 
-## 取得真实锁票请求的最短方法
+在已登录浏览器完成网站认证、验证和排队后，只观察一次明确日期、档位 / 座区及张数的正常选择。到付款前停止。
 
-一次正常会话采样可以补足缺失部分。应在已登录的浏览器中完成网站要求的验证与排队，然后只观察一次明确场次、档位和数量的正常选择动作。
+1. 操作前打开 Chrome / Edge DevTools → Network，开启录制和 Preserve log；若有新窗口，在对应窗口录制，可启用 Auto-open DevTools for popups。
+2. 停在正式选座页，记录商品、实际场次、档位、张数和当前页面；清空旧请求后只进行一次官方确认 / 下一步动作。
+3. 先按动作时间查看 All，再查看 Fetch/XHR 与 Doc。不能只筛 XHR，动作可能是表单、iframe 或导航；有 iframe 时按 frame 分组。
+4. 保存方法、域名 / 路径、Payload、Response、Initiator 与页面结果。仅有请求列表不保证导航后正文仍可读取。
+5. 入库或分享时只整理少量脱敏片段。sanitized HAR 会清理部分标准认证头，但 URL、正文及自定义头仍可能含凭据；原始 HAR 和 Copy as cURL / fetch 留在本机。
 
-1. 在操作前打开 Chrome / Edge DevTools → Network，开启录制和 Preserve log；购票若打开新窗口，需在新窗口自己的 DevTools 录制。设置中可开启 Auto-open DevTools for popups。
-2. 停在正式选票页，记录商品、日期时间、档位、数量及当前页面。在该窗口清空旧请求列表，只进行一次官网的确认选择 / 进入下一步动作，停在付款前。
-3. 从 All 按动作时间查请求，再看 Fetch/XHR 与 Doc。不能只筛 XHR：正式动作可能采用表单、iframe 或页面导航。若有 iframe，使用 Group by frame 找到所属框架。
-4. 对该动作保留方法与路径、Payload、Response、Initiator 调用脚本及页面结果。先在本机保存关键响应；仅保留请求列表不能保证导航后正文仍然可读。
-5. 分享或入库前只整理少量脱敏片段。默认 sanitized HAR 会清理 Cookie、Set-Cookie、Authorization，但官方没有保证 URL、正文和自定义头中的全部凭据都被清除。原始 HAR 和 Copy as cURL / fetch 结果留在本机。
+工具依据：[Chrome Network](https://developer.chrome.com/docs/devtools/network/reference)、[Chrome 新窗口设置](https://developer.chrome.com/docs/devtools/settings/preferences#global)、[Edge Network](https://learn.microsoft.com/en-us/microsoft-edge/devtools/network/reference)、[Edge 导航后响应保留](https://learn.microsoft.com/en-us/microsoft-edge/devtools/experimental-features/#durable-messages)。
 
-工具依据：[Chrome Network](https://developer.chrome.com/docs/devtools/network/reference)、[Chrome 新窗口设置](https://developer.chrome.com/docs/devtools/settings/preferences#global)、[Edge Network](https://learn.microsoft.com/en-us/microsoft-edge/devtools/network/reference)、[Edge 导航后响应正文保留](https://learn.microsoft.com/en-us/microsoft-edge/devtools/experimental-features/#durable-messages)。
-
-### 最小采样记录
-
-| 项目 | 必须记录的实际证据 |
+| 项目 | 应保留的证据 |
 |---|---|
-| 动作 | 所在窗口 / iframe、操作时间、官网按钮或控件名称 |
-| 请求 | HTTP 方法、域名 / 路径、真实字段名及类型；商品、正式场次、档位、数量的对应关系 |
-| 响应 | 业务结果、实际接受的数量 / 席位或套餐；如官网提供则记录期限 / 状态字段 |
-| 调用来源 | Initiator 的官方脚本文件和函数，正常处理响应的代码 |
-| 页面结果 | 进入哪一步，显示哪些已选项、数量、金额和倒计时，是否出现占用或资格提示 |
-| 脱敏 | 登录、入场、验证、会话、CSRF 和可操作的库存凭据以占位符替换；账号、联系人、证件和订单信息不入库 |
+| 动作 | 窗口 / iframe、时间、官方控件 |
+| 请求 | 方法、域名 / 路径、真实字段和类型；商品、场次、档位、逐座 ID、张数的对应关系 |
+| 响应 | 业务结果、接受的席位和张数；如有则记录期限与状态 |
+| 调用来源 | Initiator 官方脚本、函数及正常响应处理 |
+| 页面结果 | 下一步骤、席位、张数、金额、倒计时及占用 / 资格提示 |
+| 脱敏 | 替换登录、入场、验证、会话、CSRF 及可操作库存凭据；不入库账号、联系人、证件或订单信息 |
 
-未出现独立锁定编号时保持未知；可以研究后续正式页面是否足以核验暂留结果，不编造字段。超时或跳转中断不应重发来试验，先确认官方当前状态。
+超时或跳转中断时先核对官网当前状态，不重发试验。没有独立锁定编号时，可继续研究正式页面能否确认暂留结果，不编造字段。
 
-## 对扩展的具体接入顺序
+## 普通票接入顺序
 
-1. 按用户最新指定，先采样 JJ 普通票（26013793）的实际场次、选座控件、确认请求和下一步骤；Play＆Stay 后续单独验证套餐份数与包含票数。
-2. 根据实际请求及调用代码，接入“严格匹配档位 → 足量选择 → 单次官方确认 → 回执校验”。维持正常会话，由网站处理认证、验证和排队。
-3. 明确完整成功、部分成功、售罄 / 冲突、结果不明及到期行为。已确认暂留后停止尝试其他选择；结果不明先核对官方状态。
-4. 验证目标 JJ 套餐是否使用同一协议。普通公演另采样实体座位 ID 和选座确认，不能直接套用酒店套餐流程。
+1. 在新有效会话中采样 JJ 普通票实际场次、逐座控件、一次确认请求及下一页面；由本人完成验证码。
+2. 接入“严格匹配档位与座区 → 足量选择 → 单次官方确认 → 校验回执”，不绕过正常认证和队列。
+3. 明确完整成功、部分成功、售罄 / 冲突、结果不明、释放及到期行为；已确认锁定后停止其他选择，结果不明先核对。
+4. 取得明确实验配置并完成一次已授权的未支付订单流程，验证资料和含费总额，到付款前停止。
 
-本轮没有启用自动锁票。最初网络超时后，用户更换代理，已在同一队列正常自动进入 `/onestop/schedule`，点击官网下一步到 `/onestop/seat`，当前需要本人完成验证码；详见 [实际流程记录](selection-and-hold.md#已进入正式选场与选座页)。
-
-随后匿名研究该页实际加载的 23 份官方 JS 与两份 SVG，已定位 GraphQL 临时预选、REST 完成选座、取消预选、座位状态、冲突与前端过期处理。此前“尚未定位接口”是初期研究状态；最新源码证据见 [OneStop 场次与选座技术研究](onestop-flow-research.md)。尚无真实预选、完成选择或锁定的请求 / 响应记录，下一项决定性证据仍是用户指定实验配置下的一次正常操作与官网确认。
+当前扩展没有启用自动锁座。实际 ddddocr 引擎的双浏览器合成图测试验证的是本机候选和人工确认填入流程，不是官网验证码通过、座位锁定或订单成功。

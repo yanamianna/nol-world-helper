@@ -14,7 +14,6 @@ const H = context.NolHelper;
 const NOW = Date.parse('2026-10-07T10:00:00Z');
 const OPEN = Date.parse('2026-10-12T11:00:00Z');
 const ticketUrl = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013793';
-const packageUrl = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013792';
 const profileInput = {
   id: 'profile-test', label: '测试联系人', lastName: 'WANG', firstName: 'YAN',
   email: 'test@example.com', countryCode: '+86', phone: '138-0013 8000'
@@ -27,7 +26,7 @@ function taskInput(overrides = {}) {
     productUrl: ticketUrl, goodsCode: '26013793', placeCode: '26001167',
     kind: 'ticket', stage: 'general', openAt: new Date(OPEN).toISOString(), officialEndAt: '2026-10-31T02:00:59.000Z',
     quantity: 2, maxTotal: null, currency: 'KRW', profileId: 'profile-test',
-    alternatives: [{date: '2026-10-30', time: '19:00', seatGrade: '1', priceGrade: 'U1', people: 1, zones: ['A', 'B']}],
+    alternatives: [{date: '2026-10-30', time: '19:00', gradeLabel: 'VIP', seatGrade: '1', priceGrade: 'U1', zones: ['A', 'B']}],
     ...overrides
   };
 }
@@ -44,15 +43,6 @@ function officialProduct(overrides = {}) {
   };
 }
 
-function packageTask(overrides = {}) {
-  return ticketTask({
-    name: '双人套餐测试', productUrl: packageUrl, goodsCode: '26013792',
-    kind: 'package', quantity: 1, maxTotal: null,
-    alternatives: [{date: '2026-10-30', time: '19:00', packageLabel: 'INSPIRE Twin', seatGrade: '1', priceGrade: 'U1', people: 2, zones: []}],
-    ...overrides
-  });
-}
-
 function ticketOrder(overrides = {}) {
   return {
     goodsCode: '26013793', placeCode: '26001167', date: '2026-10-30', time: '19:00',
@@ -60,13 +50,6 @@ function ticketOrder(overrides = {}) {
     total: 300000, currency: 'KRW', feesKnown: true, available: true,
     ...overrides
   };
-}
-
-function packageOrder(overrides = {}) {
-  return ticketOrder({
-    goodsCode: '26013792', packageLabel: 'INSPIRE Twin', people: 2,
-    quantity: 1, zone: '', total: 1800000, ...overrides
-  });
 }
 
 test('商品链接只绑定官方 HTTPS 商品；相似域名、凭据和改写编号被拒绝', () => {
@@ -159,12 +142,27 @@ test('不可能的演出日期和时刻不能保存为场次', () => {
   }
 });
 
-test('套餐必须明确档位或名称，并保留合法的每份人数', () => {
-  const base = taskInput().alternatives[0];
-  assert.throws(() => packageTask({alternatives: [{...base, seatGrade: '', priceGrade: '', packageLabel: '', people: 2}]}));
-  for (const people of [0, -1, 1.5, Infinity]) {
-    assert.throws(() => packageTask({alternatives: [{...base, people}]}), `不应把人数 ${people} 静默改成其他人数`);
+test('仅保存普通票任务；旧套餐及未知类型明确拒绝而不转换', () => {
+  for (const kind of ['package', 'stay', '', undefined, null]) {
+    assert.throws(() => ticketTask({kind}), /仅支持普通票/, `不应接受任务类型 ${kind}`);
   }
+  assert.equal(ticketTask().kind, 'ticket');
+});
+
+test('旧普通票档位名称兼容迁移，规范选择不再保存套餐名称或人数', () => {
+  const base = taskInput().alternatives[0];
+  const legacy = {...base, packageLabel: 'VIP 旧名称', people: 2};
+  delete legacy.gradeLabel;
+  const alternative = ticketTask({alternatives: [legacy]}).alternatives[0];
+  assert.equal(alternative.gradeLabel, 'VIP 旧名称');
+  assert.equal('packageLabel' in alternative, false);
+  assert.equal('people' in alternative, false);
+  assert.equal(alternative.seatGrade, '1');
+  assert.equal(alternative.priceGrade, 'U1');
+  assert.deepEqual(Array.from(alternative.zones), ['A', 'B']);
+  const modern = ticketTask({alternatives: [{...legacy, gradeLabel: 'VIP 新名称'}]}).alternatives[0];
+  assert.equal(modern.gradeLabel, 'VIP 新名称');
+  assert.equal(ticketTask({alternatives: [{...legacy, gradeLabel: ''}]}).alternatives[0].gradeLabel, '');
 });
 
 test('开售前绝不触发；达到时间且前台活跃才触发', () => {
@@ -248,20 +246,31 @@ test('确认的高金额不受旧预算限制；含费金额未知、无效或�
   ]) assert.equal(H.checkOrder(task, ticketOrder(change)).ok, false, JSON.stringify(change));
 });
 
-test('双人套餐一份与两份、其他人数或其他档位不能混同', () => {
-  const task = packageTask();
-  assert.equal(H.checkOrder(task, packageOrder()).ok, true);
-  for (const change of [
-    {quantity: 2}, {people: 1}, {people: undefined}, {seatGrade: '2'}, {priceGrade: 'U2'}
-  ]) assert.equal(H.checkOrder(task, packageOrder(change)).ok, false, JSON.stringify(change));
-  const named = packageTask({alternatives: [{date: '2026-10-30', time: '19:00', packageLabel: 'INSPIRE Twin', seatGrade: '', priceGrade: '', people: 2, zones: []}]});
-  assert.equal(H.checkOrder(named, packageOrder({packageLabel: 'Other Hotel Twin'})).ok, false);
+test('旧非普通票任务绕过保存后仍不能确认订单或选择库存', () => {
+  const task = ticketTask();
+  for (const kind of ['package', 'stay', undefined, null]) {
+    const legacyTask = {...task, kind};
+    const checked = H.checkOrder(legacyTask, ticketOrder());
+    assert.equal(checked.ok, false);
+    assert.match(checked.reason, /仅支持普通票/);
+    assert.equal(H.pickAlternative(legacyTask, [ticketOrder()]), null);
+  }
+});
+
+test('普通票显示名和旧人数不代替档位编号，也不参与酒店人数匹配', () => {
+  const base = taskInput().alternatives[0];
+  const task = ticketTask({alternatives: [{...base, packageLabel: '旧字段', people: 2}]});
+  for (const people of [undefined, 0, 1, 2, 99]) {
+    assert.equal(H.checkOrder(task, ticketOrder({gradeLabel: '显示名变化', packageLabel: '旧字段变化', people})).ok, true);
+  }
+  assert.equal(H.checkOrder(task, ticketOrder({gradeLabel: base.gradeLabel, seatGrade: '2'})).ok, false);
+  assert.equal(H.checkOrder(task, ticketOrder({gradeLabel: base.gradeLabel, priceGrade: 'U2'})).ok, false);
 });
 
 test('购票优先顺序先于价格；较便宜场次不能越过前面的可用选择', () => {
   const task = ticketTask({alternatives: [
-    {date: '2026-10-30', time: '19:00', people: 1, zones: ['A']},
-    {date: '2026-10-31', time: '18:00', people: 1, zones: ['B']}
+    {date: '2026-10-30', time: '19:00', zones: ['A']},
+    {date: '2026-10-31', time: '18:00', zones: ['B']}
   ]});
   const first = ticketOrder({marker: 'first', total: 90000000});
   const later = ticketOrder({marker: 'later-cheaper', date: '2026-10-31', time: '18:00', zone: 'B', total: 200000});
@@ -284,16 +293,16 @@ test('同场次先座区优先再低价；不可用、费用未知或错误商�
   assert.equal(H.pickAlternative(task, items.slice(1, 4)), null);
 });
 
-test('套餐遵循购票优先顺序，高价不导致转向后面的酒店', () => {
-  const task = packageTask({alternatives: [
-    {date: '2026-10-30', time: '19:00', seatGrade: '1', priceGrade: 'U1', people: 2, zones: []},
-    {date: '2026-10-30', time: '19:00', seatGrade: '3', priceGrade: 'U1', people: 2, zones: []}
+test('普通票按档位优先顺序选择，高价不导致跳过前面的可用档位', () => {
+  const task = ticketTask({alternatives: [
+    {date: '2026-10-30', time: '19:00', seatGrade: '1', priceGrade: 'U1', zones: []},
+    {date: '2026-10-30', time: '19:00', seatGrade: '3', priceGrade: 'U1', zones: []}
   ]});
-  const preferred = packageOrder({marker: 'preferred-hotel', total: 1800000});
-  const cheaper = packageOrder({marker: 'cheaper-hotel', seatGrade: '3', total: 1690000});
-  assert.equal(H.pickAlternative(task, [cheaper, preferred]).marker, 'preferred-hotel');
-  assert.equal(H.pickAlternative(task, [cheaper, {...preferred, total: 2000001}]).marker, 'preferred-hotel');
-  assert.equal(H.pickAlternative(task, [cheaper, {...preferred, available: false}]).marker, 'cheaper-hotel');
+  const preferred = ticketOrder({marker: 'preferred-grade', total: 90000000});
+  const cheaper = ticketOrder({marker: 'cheaper-grade', seatGrade: '3', total: 300000});
+  assert.equal(H.pickAlternative(task, [cheaper, preferred]).marker, 'preferred-grade');
+  assert.equal(H.pickAlternative(task, [cheaper, {...preferred, total: 90000001}]).marker, 'preferred-grade');
+  assert.equal(H.pickAlternative(task, [cheaper, {...preferred, available: false}]).marker, 'cheaper-grade');
 });
 
 test('诊断导出保留状态，移除意外附带的联系人和会话凭据', () => {

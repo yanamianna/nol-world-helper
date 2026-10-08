@@ -1,4 +1,4 @@
-"""Isolated rendered OCR QA with synthetic images and an in-process fake engine.
+"""Isolated rendered OCR QA with synthetic images and an optional real engine.
 
 Browser plugin not available; Playwright is used only for our own static fixture.
 The copied manifest simulates a granted localhost permission. No personal profile,
@@ -119,6 +119,7 @@ def main():
     parser.add_argument('--browser-executable', default=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe')
     parser.add_argument('--extension-root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--outdir', type=Path)
+    parser.add_argument('--real-ocr', action='store_true', help='Use the installed ddddocr model for the synthetic images; the default uses a fake engine.')
     parser.add_argument('--service-unavailable-only', action='store_true', help='Only recheck failure fallback and the hidden preview after the CSS fix.')
     args = parser.parse_args()
     extension = args.extension_root.resolve()
@@ -130,16 +131,26 @@ def main():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     local_requests = []
-    class FakeEngine:
+    initialization_started = time.monotonic()
+    real_engine = module.load_recognizer().engine if args.real_ocr else None
+    initialization_ms = round((time.monotonic() - initialization_started) * 1000, 1)
+    class InstrumentedEngine:
         calls = 0
         delay = 0
         started = threading.Event()
-        def classification(self, _image, png_fix=True):
+        def __init__(self):
+            self.inference_ms = []
+            self.candidates = []
+        def classification(self, image, png_fix=True):
             self.calls += 1
             self.started.set()
             time.sleep(self.delay)
-            return 'ABCDEF'
-    engine = FakeEngine()
+            inference_started = time.monotonic()
+            result = real_engine.classification(image, png_fix=png_fix) if real_engine is not None else 'ABCDEF'
+            self.inference_ms.append(round((time.monotonic() - inference_started) * 1000, 1))
+            self.candidates.append(result)
+            return result
+    engine = InstrumentedEngine()
     class Handler(module.Handler):
         def reply(self, status, payload):
             local_requests.append({'path': self.path, 'status': status, 'hasExtensionId': bool(self.headers.get('X-NOL-Extension-Id')), 'originPresent': self.headers.get('Origin') is not None})
@@ -343,10 +354,13 @@ def main():
                 assert not warnings, warnings
                 assert (extension/'manifest.json').read_text(encoding='utf-8') == production_manifest
                 report = {'browser': context.browser.version, 'passed': len(checks), 'checks': checks, 'fixtureLoads': fixture_loads,
-                    'localRequests': local_requests, 'fakeEngineCalls': engine.calls, 'background': network, 'confirmedFillActions': fill_actions, 'beforeReloadActions': before_reload_actions, 'finalPageActions': actions,
+                    'localRequests': local_requests, 'fakeEngineCalls': engine.calls if not args.real_ocr else 0,
+                    'realEngineCalls': engine.calls if args.real_ocr else 0, 'engineMode': 'ddddocr' if args.real_ocr else 'fake',
+                    'engineInitializationMs': initialization_ms, 'inferenceMs': engine.inference_ms, 'engineCandidates': engine.candidates,
+                    'background': network, 'confirmedFillActions': fill_actions, 'beforeReloadActions': before_reload_actions, 'finalPageActions': actions,
                     'externalNetwork': 0, 'unexpectedConsoleErrors': unexpected_errors, 'expectedServiceUnavailableConsoleErrors': [message for message in errors if 'ERR_CONNECTION_REFUSED' in message],
                     'warnings': warnings, 'productionManifestUnchanged': True, 'permission': 'Simulated only in an isolated manifest copy; native optional permission prompt not tested.',
-                    'limitations': ['Fake recognizer always returns ABCDEF; no live OCR accuracy measured.', 'Static synthetic DOM only; no real CAPTCHA or ticket API.', 'Closed shadow inspected read-only by CDP; actual user clicks and keyboard events remained trusted.']}
+                    'limitations': [('Real ddddocr model used only on generated synthetic images; NOL CAPTCHA accuracy is untested.' if args.real_ocr else 'Fake recognizer always returns ABCDEF; no live OCR accuracy measured.'), 'Static synthetic DOM only; no real CAPTCHA or ticket API.', 'Closed shadow inspected read-only by CDP; actual user clicks and keyboard events remained trusted.']}
                 (evidence/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
                 print(json.dumps(report, ensure_ascii=False))
                 context.close()

@@ -27,10 +27,25 @@ const capabilities = [
 let chain = chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
 function serialize(job) { const result = chain.then(job); chain = result.catch(()=>{}); return result; }
 const empty = () => ({tasks:[],profiles:[],run:null});
+function bundledProductName(value) {
+  const name=String(value || '').normalize('NFKC');
+  return /\b(?:play\s*(?:&|and)\s*stay|stay\s*(?:&|and)\s*play)\b|\+\s*hotels?\s*$/i.test(name);
+}
 async function read() {
-  const state = (await chrome.storage.local.get(KEY))[KEY] || empty();
+  const saved = (await chrome.storage.local.get(KEY))[KEY] || empty();
   // A previously saved budget also becomes unlimited under the current policy.
-  return {...state, tasks:state.tasks.map(task=>({...task,maxTotal:null}))};
+  return {...saved,tasks:saved.tasks.map(task=>({...task,maxTotal:null}))};
+}
+function supportedTask(task) {return task?.kind==='ticket' && !bundledProductName(task.productName);}
+// Call under serialize: stopping an obsolete task must not race a new ARM.
+async function stopUnsupportedRun(state) {
+  const task=state.tasks.find(t=>t.id===state.run?.taskId);
+  if(state.run && !TERMINAL.has(state.run.status) && !supportedTask(task)) {
+    state.run.status='stopped';record(state.run,'旧任务已停用','本版本仅支持普通公演票，请新建普通票任务。');
+    await clearAlarms(state.run);await write(state);await cancelEntry(state.run);
+    return true;
+  }
+  return false;
 }
 function trusted(sender) { return !!sender.url?.startsWith(chrome.runtime.getURL('')); }
 function allowed(url) { try {const u = new URL(url); return u.protocol === 'https:' && HOSTS.has(u.hostname) && !u.port;} catch {return false;} }
@@ -48,7 +63,8 @@ async function write(state) {
 function publicState(s) {return {...s, run:s.run ? {...s.run,task:s.tasks.find(t=>t.id===s.run.taskId)} : null, capabilities};}
 function context(s, sender) {
   if (!allowed(sender.url) || !sender.tab || sender.frameId!==0 || s.run?.tabId !== sender.tab.id || TERMINAL.has(s.run.status)) return null;
-  return {run:s.run, task:s.tasks.find(t=>t.id===s.run.taskId), capabilities};
+  const task=s.tasks.find(t=>t.id===s.run.taskId);
+  return supportedTask(task)?{run:s.run,task,capabilities}:null;
 }
 async function clearAlarms(run) {
   if (!run) return;
@@ -69,6 +85,7 @@ async function fetchProduct(url) {
     if (!response.ok) throw new Error(`商品页读取失败 (${response.status})`);
     const parsed = H.adapters.nol.extractProduct(await response.text(),product.url);
     if(!parsed) throw new Error('商品页结构无法识别，请稍后重新读取官网资料');
+    if(bundledProductName(parsed.goodsName)) throw new Error('仅支持普通公演票，请选择普通票商品链接');
     const query = new URLSearchParams({goodsCode:product.goodsCode,placeCode:product.placeCode,bizCode:'10965'});
     const sales = await fetch(`https://world.nol.com/api/ent-channel-out/v1/goods/salesinfo?${query}`, {credentials:'omit',signal:controller.signal,redirect:'error',headers:{'X-Service-Origin':'global','X-Triple-User-Lang':'zh-CN'}});
     if (!sales.ok) throw new Error(`官网开售接口读取失败 (${sales.status})，任务不会使用旧时间启动`);
@@ -78,7 +95,7 @@ async function fetchProduct(url) {
     const presales = Array.isArray(data.preSalesInfo) ? data.preSalesInfo : [];
     const presaleChoices = presales.map(p=>({seq:String(p.seq || ''),label:String(p.buttonName || p.preBookingKindName || '会员预售'),openAt:koreanIso(p.bookingOpenTime),endAt:koreanIso(p.bookingEndTime)})).filter(p=>p.seq && p.openAt && p.endAt && Date.parse(p.endAt)>Date.parse(p.openAt));
     return {...parsed,...product,productUrl:product.url,opening:{general:koreanIso(regular),generalEnd:koreanIso(data.salesInfo?.bookingEndTime),presale:presaleChoices.length===1?presaleChoices[0].openAt:''},presaleChoices,salesInfo:data,
-      prices:(parsed.prices || []).map(p=>({...p,label:[p.seatGradeName,p.priceGradeName].filter(Boolean).join(' · ') || p.label || '',price:Number(p.salesPrice ?? p.price),people:/2\s*(人|people)/i.test(p.seatGradeName || '')?2:/1\s*(人|person)/i.test(p.seatGradeName || '')?1:null}))};
+      prices:(parsed.prices || []).map(p=>({...p,label:[p.seatGradeName,p.priceGradeName].filter(Boolean).join(' · ') || p.label || '',price:Number(p.salesPrice ?? p.price)}))};
   } finally {clearTimeout(timer);}
 }
 function officialTask(input, product) {
@@ -105,7 +122,8 @@ const apiReasons = {
 function entryReason(code) { return apiReasons[code] || '入场流程未完成，请在官网检查状态，停止后重新启动任务；扩展不会重试。'; }
 async function runEntry(message,sender) {
   const payload=await serialize(async()=>{
-    const s=await read(),c=context(s,sender),r=c?.run;
+    const s=await read();await stopUnsupportedRun(s);
+    const c=context(s,sender),r=c?.run;
     if (!c || message.runId!==r.id || r.status!=='running' || !r.entryClaimed || r.apiDispatched) throw new Error('入场接口已处理、任务已暂停或页面不匹配');
     const page=H.parseProductUrl(sender.url);
     if (page.goodsCode!==c.task.goodsCode || page.placeCode!==c.task.placeCode) throw new Error('当前商品不匹配');
@@ -141,6 +159,7 @@ async function handle(message,sender) {
   if (!ui && !siteTypes.has(message?.type)) throw new Error('此操作只能由扩展设置页执行');
   if (message.type==='READ_PRODUCT') return fetchProduct(message.url);
   const s = await read();
+  await stopUnsupportedRun(s);
   const c = ui ? null : context(s,sender);
   if (!ui && !c) {if(message.type==='GET_CONTEXT') return null; throw new Error('当前页面没有被启动的任务');}
   switch (message.type) {
@@ -249,6 +268,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
       if(!trusted(sender)) throw new Error('此操作只能由扩展设置页执行');
       const input=message.type==='SAVE_TASK'?message.task:(await read()).tasks.find(t=>t.id===message.taskId);
       if(!input) throw new Error('任务不存在');
+      if(input.kind!=='ticket') throw new Error('仅支持普通票，旧任务请删除后重新创建');
       const officialProduct=await fetchProduct(input.productUrl);
       return serialize(()=>handle({...message,officialProduct},sender));
     }
@@ -257,7 +277,8 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   work.then(data=>respond({ok:true,data}),e=>respond({ok:false,error:e.message || '操作失败'}));return true;
 });
 async function restart(reason) {
-  const s=await read(); if(s.run && !TERMINAL.has(s.run.status)){await clearAlarms(s.run);s.run.status='paused';record(s.run,'需要重新检查',reason);await write(s);void cancelEntry(s.run);}
+  const s=await read();if(await stopUnsupportedRun(s))return;
+  if(s.run && !TERMINAL.has(s.run.status)){await clearAlarms(s.run);s.run.status='paused';record(s.run,'需要重新检查',reason);await write(s);void cancelEntry(s.run);}
 }
 chrome.runtime.onStartup.addListener(()=>serialize(()=>restart('浏览器已重启，请检查并重新启动任务')));
 chrome.runtime.onInstalled.addListener(()=>serialize(()=>restart('扩展已加载或更新，请重新启动任务')));
@@ -265,6 +286,7 @@ async function refreshOfficialTime(runId) {
   const before=await read(),original=before.run;
   if(!original || original.id!==runId || original.status!=='armed' || original.entryClaimed) return;
   const task=before.tasks.find(t=>t.id===original.taskId);
+  if(!supportedTask(task)) return serialize(async()=>stopUnsupportedRun(await read()));
   let product,error;
   try {product=await fetchProduct(task.productUrl);} catch(e) {error=e;}
   return serialize(async()=>{
@@ -292,7 +314,8 @@ async function refreshOfficialTime(runId) {
 chrome.alarms.onAlarm.addListener(alarm=>{
   if(alarm.name.startsWith('sale:')) return refreshOfficialTime(alarm.name.slice(5));
   return serialize(async()=>{
-  const s=await read(),r=s.run;if(!r || !alarm.name.endsWith(r.id)) return;
+  const s=await read();if(await stopUnsupportedRun(s))return;
+  const r=s.run;if(!r || !alarm.name.endsWith(r.id)) return;
   if(alarm.name.startsWith('warm:') && r.status==='armed') {
     try {await chrome.tabs.update(r.tabId,{active:true});record(r,'开票准备','请保持此商品页前台，完成登录和公告处理');await write(s);}catch {r.status='paused';record(r,'商品页已关闭','请停止后重新启动任务');await write(s);}
   }

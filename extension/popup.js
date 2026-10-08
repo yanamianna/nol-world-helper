@@ -29,16 +29,18 @@
   }
   function renderTasks() {
     const active = state.run && !finalStatuses.has(state.run.status);
-    const selected = active ? state.run.taskId : $('popup-task').value || state.tasks[0]?.id || '';
+    const tasks=state.tasks.filter(task=>task.kind==='ticket');
+    const selected = active ? state.run.taskId : $('popup-task').value || tasks[0]?.id || '';
     $('popup-task').replaceChildren();
-    if (!state.tasks.length) $('popup-task').append(new Option('暂无任务，请先打开设置', ''));
-    for (const task of state.tasks) $('popup-task').append(new Option(task.name || '未命名任务', task.id));
-    $('popup-task').value = state.tasks.some((task) => task.id === selected) ? selected : state.tasks[0]?.id || '';
+    if (!tasks.length) $('popup-task').append(new Option('暂无普通票任务，请先打开设置', ''));
+    for (const task of tasks) $('popup-task').append(new Option(task.name || '未命名任务', task.id));
+    $('popup-task').value = tasks.some((task) => task.id === selected) ? selected : tasks[0]?.id || '';
     $('popup-task').disabled = Boolean(state.run && !finalStatuses.has(state.run.status));
   }
   function render() {
     const run = state.run;
-    const task = run && !finalStatuses.has(run.status) ? state.tasks.find((item) => item.id === run.taskId) || run.task : selectedTask();
+    const selected = run && !finalStatuses.has(run.status) ? state.tasks.find((item) => item.id === run.taskId) || run.task : selectedTask();
+    const task=selected?.kind==='ticket'?selected:null;
     const active = Boolean(run && !finalStatuses.has(run.status));
     $('run-detail').hidden = !task;
     const officialTime = task?.openAtSource === 'official' && Number.isFinite(Date.parse(task.openAt)) && Date.parse(task.officialEndAt) > Date.parse(task.openAt);
@@ -50,8 +52,8 @@
     if (active && resume.hint) $('run-detail').textContent += ` ${resume.hint}`;
     $('popup-arm').hidden = active || Boolean(opened);
     $('popup-immediate').hidden = active || !opened;
-    $('popup-arm').disabled = !officialTime || actionPending;
-    $('popup-immediate').disabled = !officialTime || actionPending;
+    $('popup-arm').disabled = !task || !officialTime || actionPending;
+    $('popup-immediate').disabled = !task || !officialTime || actionPending;
     $('popup-pause').hidden = !active || run.status === 'paused' || run.status === 'waiting-manual';
     $('popup-resume').hidden = !active || !resume.available;
     $('popup-resume').textContent = resume.label || '继续';

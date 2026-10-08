@@ -139,7 +139,7 @@
       verified: false,
       route,
       code: 'GLOBAL_DOM_UNVERIFIED',
-      reason: '已进入 Interpark。该实际预约页面的控件尚未验证，自动选场次、套餐、座位和订单填写已停止，请人工接管。'
+      reason: '已进入 Interpark。该实际预约页面的控件尚未验证，自动选场次、座位和订单填写已停止，请人工接管。'
     };
   }
 

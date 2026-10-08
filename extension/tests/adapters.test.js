@@ -8,11 +8,12 @@ const vm = require('node:vm');
 
 const extension = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(__dirname, 'fixtures/product.html'), 'utf8');
-// Expectations independently recorded from the anonymous public capture.
-const capturedDetail = { goodsName: '［Play＆Stay］JEONGHAN X JOSHUA JOURNEY INTO［DREAMING］- INCHEON + Hotels', goodsCode: '26013792', placeCode: '26001167', priceCount: 24, bookingOpenTime: '2026-10-12 20:00:00' };
-const url = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013792';
+// Synthetic ordinary-ticket wrapper: public identity/times, test-only grade IDs.
+// The purchase-button markup was observed separately on NOL.
+const capturedDetail = { goodsName: 'JEONGHAN X JOSHUA JOURNEY INTO ［DREAMING］ - INCHEON', goodsCode: '26013793', placeCode: '26001167', priceCount: 1, bookingOpenTime: '2026-10-12 20:00:00' };
+const url = 'https://world.nol.com/zh-CN/ticket/places/26001167/products/26013793';
 const entryMarkup = /<div class="show_laptop grid-area_purchase-button[^>]*>\s*<button\b([^>]*)>([\s\S]*?)<\/button>/.exec(html);
-assert.ok(entryMarkup, 'the selector fixture must come from the captured real product page');
+assert.ok(entryMarkup, 'the selector fixture must retain separately observed NOL button markup');
 const capturedClass = /class="([^"]*)"/.exec(entryMarkup[1])[1];
 
 function loadAdapters() {
@@ -57,7 +58,7 @@ function documentStub(entries = [button()], options = {}) {
 
 function context(overrides = {}) {
   return {
-    task: { productUrl: url, goodsCode: '26013792', placeCode: '26001167', openAt: 1000, maxTotal: null, ...overrides.task },
+    task: { productUrl: url, goodsCode: '26013793', placeCode: '26001167', openAt: 1000, maxTotal: null, ...overrides.task },
     run: { id: 'run-one', entryClaimed: true, entryClicked: false, ...overrides.run },
     now: overrides.now === undefined ? 1000 : overrides.now,
     requestEntry: overrides.requestEntry || (async () => ({submitted: true, code: 'ENTRY_REDIRECTING'}))
@@ -75,21 +76,21 @@ function rejectsCode(action, expected) {
 test('NOL matches only exact HTTPS public ticket product URLs', () => {
   const { nol } = loadAdapters();
   assert.equal(nol.matches(url), true);
-  for (const bad of ['http://world.nol.com/zh-CN/ticket/places/26001167/products/26013792', url.replace('world.nol.com', 'world.nol.com.evil.test'), url.replace('world.nol.com', 'user@world.nol.com'), url.replace('/products/26013792', '/products/26013792/order'), 'https://world.nol.com/zh-CN/my-info']) assert.equal(nol.matches(bad), false);
+  for (const bad of ['http://world.nol.com/zh-CN/ticket/places/26001167/products/26013793', url.replace('world.nol.com', 'world.nol.com.evil.test'), url.replace('world.nol.com', 'user@world.nol.com'), url.replace('/products/26013793', '/products/26013793/order'), 'https://world.nol.com/zh-CN/my-info']) assert.equal(nol.matches(bad), false);
 });
 
-test('real captured RSC yields product metadata and all 24 price grades without executing scripts', () => {
+test('synthetic ordinary-ticket Flight yields metadata and one test grade without executing scripts', () => {
   const { nol } = loadAdapters();
   const product = nol.extractProduct(html, url);
   assert.equal(product.goodsName, capturedDetail.goodsName);
   assert.equal(product.goodsCode, capturedDetail.goodsCode);
   assert.equal(product.placeCode, capturedDetail.placeCode);
   assert.equal(product.prices.length, capturedDetail.priceCount);
-  assert.equal(product.prices[0].salesPrice, 1750000);
-  assert.equal(product.prices[23].seatGrade, '24');
+  assert.equal(product.prices[0].salesPrice, 143000);
+  assert.equal(product.prices[0].seatGrade, 'SYNTHETIC_A');
   assert.equal(product.opening.bookingOpenTime, capturedDetail.bookingOpenTime);
   assert.equal(Object.prototype.hasOwnProperty.call(product, 'playSeq'), false);
-  assert.equal(nol.extractProduct(html, url.replace('26013792', '26013793')), null);
+  assert.equal(nol.extractProduct(html, url.replace('26013793', '26013794')), null);
   assert.equal(nol.extractProduct('<script>throw new Error("must not execute");</script>', url), null);
   assert.equal(nol.extractProduct('<script>self.__next_f.push([1,"malformed"])</script>', url), null);
 });
@@ -155,9 +156,9 @@ test('the observed announcement modal forces manual handling without dismissing 
 
 test('the configured goods and place must match both URL and metadata', async () => {
   const { nol } = loadAdapters();
-  await rejectsCode(() => nol.enter(documentStub(), context({ task: { goodsCode: '26013793' } })), 'PRODUCT_MISMATCH');
-  const other = url.replace('26013792', '26013793');
-  const state = nol.inspect(documentStub([button()], { url: other }), context({ task: { productUrl: other, goodsCode: '26013793' } }));
+  await rejectsCode(() => nol.enter(documentStub(), context({ task: { goodsCode: '26013794' } })), 'PRODUCT_MISMATCH');
+  const other = url.replace('26013793', '26013794');
+  const state = nol.inspect(documentStub([button()], { url: other }), context({ task: { productUrl: other, goodsCode: '26013794' } }));
   assert.equal(state.code, 'PRODUCT_METADATA_MISMATCH');
 });
 

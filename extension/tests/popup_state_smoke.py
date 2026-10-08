@@ -72,7 +72,7 @@ with sync_playwright() as p:
         now = datetime.now(timezone.utc)
         opening = (now + timedelta(minutes=-5 if past else 10)).isoformat()
         end = (now + timedelta(days=1)).isoformat()
-        task = {'id':'qa-task', 'name':'QA 官方入场状态', 'openAt':opening, 'officialEndAt':end,
+        task = {'id':'qa-task', 'name':'QA 官方入场状态', 'kind':'ticket', 'openAt':opening, 'officialEndAt':end,
                 'openAtSource':'official', 'stage':'general', 'maxTotal':None}
         reason = f'QA {name}：保留后台原始原因。'
         run = {'id':f'qa-{name}', 'taskId':task['id'], 'status':status, 'openAt':opening,

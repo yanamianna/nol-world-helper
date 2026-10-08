@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NOL 公演助手",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "按官网开售时间前台值守，通过官方入口进入购票。图片验证码可本机识别并人工核对填入，支付人工操作。",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms", "scripting", "webNavigation"],

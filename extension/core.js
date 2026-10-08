@@ -37,11 +37,12 @@
     return {openAt:selected.openAt, endAt:selected.endAt, preSaleSeq:String(selected.seq)};
   }
   function validateTask(input, profiles = [], now = Date.now(), allowImmediate = false) {
+    if (input?.kind !== 'ticket') fail('仅支持普通票；旧套餐任务不能继续运行，请重新创建普通票任务');
     const parsed = parseProductUrl(input?.productUrl);
     if (input.goodsCode && input.goodsCode !== parsed.goodsCode || input.placeCode && input.placeCode !== parsed.placeCode) fail('商品编号与链接不一致');
     if (input.openAtSource === 'manual') fail('已取消手动开售时间，请重新读取官网时间');
     const task = {id: identifier(input.id) ? input.id : makeId(), name: text(input.name), productUrl: parsed.url, goodsCode: parsed.goodsCode, placeCode: parsed.placeCode, productName: text(input.productName), kind: input.kind, stage: input.stage, openAt: input.openAt, openAtSource:'official', officialEndAt:input.officialEndAt, officialCheckedAt:Number(input.officialCheckedAt) || 0, preSaleSeq:input.stage === 'presale' ? text(input.preSaleSeq,40) : '', quantity: Number(input.quantity), maxTotal: null, currency: input.currency || 'KRW', profileId: input.profileId};
-    if (!task.name || !['package', 'ticket'].includes(task.kind) || !['general', 'presale'].includes(task.stage)) fail('请填写任务名称、商品类型和开售阶段');
+    if (!task.name || !['general', 'presale'].includes(task.stage)) fail('请填写任务名称和开售阶段');
     const stamp = Date.parse(task.openAt);
     if (!Number.isFinite(stamp) || !/(Z|[+-]\d{2}:\d{2})$/.test(task.openAt)) fail('开票时间必须包含时区');
     if (!allowImmediate && stamp <= now) fail('开票时间已过，请使用“立即开始”');
@@ -54,11 +55,9 @@
     if (!profiles.some(p => p.id === task.profileId)) fail('请选择已保存的联系人');
     if (!Array.isArray(input.alternatives) || input.alternatives.length < 1 || input.alternatives.length > 20) fail('请设置 1–20 个购票选择，并排好购票优先顺序');
     task.alternatives = input.alternatives.map(a => {
-      const alt = {date: text(a.date, 10), time: text(a.time, 5), packageLabel: text(a.packageLabel), seatGrade: text(a.seatGrade, 40), priceGrade: text(a.priceGrade, 40), people: task.kind === 'package' ? Number(a.people) : Number(a.people ?? 1), zones: (Array.isArray(a.zones) ? a.zones : []).map(z => text(z)).filter(Boolean)};
+      const alt = {date: text(a.date, 10), time: text(a.time, 5), gradeLabel: text(a.gradeLabel ?? a.packageLabel), seatGrade: text(a.seatGrade, 40), priceGrade: text(a.priceGrade, 40), zones: (Array.isArray(a.zones) ? a.zones : []).map(z => text(z)).filter(Boolean)};
       if (!/^\d{4}-\d{2}-\d{2}$/.test(alt.date) || new Date(`${alt.date}T00:00:00Z`).toISOString().slice(0,10) !== alt.date) fail('请选择有效的演出日期');
       if (alt.time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(alt.time)) fail('场次时间应为韩国时间 HH:mm');
-      if (task.kind === 'package' && !(alt.packageLabel || alt.seatGrade && alt.priceGrade)) fail('套餐购票选择需要明确酒店房型名称或套餐档位编号');
-      if (!Number.isSafeInteger(alt.people) || alt.people < 1 || alt.people > 20) fail('请填写每份套餐包含的人数');
       return alt;
     });
     return task;
@@ -72,28 +71,26 @@
     if (now - target > 5000 || Number.isFinite(lastTick) && now - lastTick > 2500) return 'missed';
     return 'fire';
   }
-  function matchesAlternative(task, a, actual) {
+  function matchesAlternative(a, actual) {
     if (actual.date !== a.date || a.time && actual.time !== a.time) return false;
-    if (task.kind === 'package') {
-      if (a.seatGrade && a.priceGrade) return actual.seatGrade === a.seatGrade && actual.priceGrade === a.priceGrade && actual.people === a.people;
-      return actual.packageLabel === a.packageLabel && actual.people === a.people;
-    }
     if (a.seatGrade && actual.seatGrade !== a.seatGrade || a.priceGrade && actual.priceGrade !== a.priceGrade) return false;
     return !a.zones.length || a.zones.includes(actual.zone);
   }
   function checkOrder(task, actual) {
     const bad = reason => ({ok: false, reason});
+    if (task?.kind !== 'ticket') return bad('仅支持普通票，旧套餐任务不可继续运行');
     if (!actual || actual.goodsCode !== task.goodsCode || actual.placeCode !== task.placeCode) return bad('商品或场馆不匹配');
-    if (!task.alternatives.some(a => matchesAlternative(task, a, actual))) return bad('场次、档位、酒店人数或座区不符合购票选择');
-    if (actual.quantity !== task.quantity) return bad('票数或套餐份数不匹配');
+    if (!task.alternatives.some(a => matchesAlternative(a, actual))) return bad('场次、档位或座区不符合购票选择');
+    if (actual.quantity !== task.quantity) return bad('票数不匹配');
     if (actual.currency !== task.currency) return bad('币种不匹配');
     if (actual.feesKnown !== true || !Number.isSafeInteger(actual.total) || actual.total <= 0) return bad('含必要费用的总金额尚未确认');
     return {ok: true, reason: ''};
   }
   function pickAlternative(task, available) {
+    if (task?.kind !== 'ticket') return null;
     for (const a of task.alternatives) {
-      const items = (available || []).filter(item => item.available === true && matchesAlternative(task, a, item) && checkOrder({...task, alternatives:[a]}, item).ok);
-      if (task.kind === 'ticket') items.sort((x,y) => (a.zones.length ? a.zones.indexOf(x.zone) - a.zones.indexOf(y.zone) : 0) || x.total - y.total);
+      const items = (available || []).filter(item => item.available === true && matchesAlternative(a, item) && checkOrder({...task, alternatives:[a]}, item).ok);
+      items.sort((x,y) => (a.zones.length ? a.zones.indexOf(x.zone) - a.zones.indexOf(y.zone) : 0) || x.total - y.total);
       if (items.length) return items[0];
     }
     return null;
