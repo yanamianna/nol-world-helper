@@ -53,6 +53,16 @@ function fixture({captcha=true, url='https://tickets.interpark.com/onestop/seat'
   return {doc,ctx,title,schedule,image,heading,input,button,layer};
 }
 
+function expiredDialog(f) {
+  const title=element('10分钟的座位选择时间已超过');
+  const description=element('请重新开始预订');
+  const button=element('确定');
+  const dialog=element('',{':scope > div.nds-e-dialog__title':[title],':scope > div.nds-e-dialog__description':[description],button:[button]});
+  f.doc.selections['[role="dialog"][aria-modal="true"]']=[dialog];
+  f.doc.selections['div.nds-e-dialog__container[role="dialog"][aria-modal="true"]']=[dialog];
+  return {dialog,title,description,button};
+}
+
 test('the observed ordinary-ticket seat page reports visible CAPTCHA and remains manual', () => {
   const global = adapter(), f = fixture();
   const state = global.inspect(f.doc,f.ctx);
@@ -77,6 +87,50 @@ test('an observed seat page without a visible CAPTCHA remains manual with unveri
   assert.match(state.reason,/选座与锁座尚未验证/);
   assert.equal(global.step(f.doc,f.ctx).status,'manual');
   assert.throws(() => global.enter(f.doc,f.ctx), error => error.code==='GLOBAL_DOM_UNVERIFIED');
+});
+
+test('the observed expiry dialog takes precedence over CAPTCHA even after the map unmounts', () => {
+  const global=adapter();
+  for(const removeMap of [false,true]) {
+    const f=fixture();expiredDialog(f);
+    if(removeMap) f.doc.selections[selectors.image]=[];
+    Object.defineProperty(f.heading,'textContent',{get(){throw new Error('expired session must not inspect CAPTCHA');}});
+    const state=global.inspect(f.doc,f.ctx);
+    assert.equal(state.kind,'expired');
+    assert.equal(state.verified,true);
+    assert.equal(state.code,'SEAT_SESSION_EXPIRED');
+    assert.match(state.reason,/已过期/);
+    assert.match(state.reason,/不会.*自动重新入场/);
+    assert.equal(global.step(f.doc,f.ctx).status,'manual');
+    assert.equal(global.step(f.doc,f.ctx).code,'SEAT_SESSION_EXPIRED');
+  }
+});
+
+test('an unknown or changed visible modal remains unknown instead of requesting CAPTCHA', () => {
+  const global=adapter();
+  for(const change of [
+    (f,d)=>{d.title.textContent='Unknown notice';},
+    (f,d)=>{d.description.textContent='Changed description';},
+    (f,d)=>{d.button.textContent='Other action';},
+    (f,d)=>{f.doc.selections['div.nds-e-dialog__container[role="dialog"][aria-modal="true"]']=[];},
+    (f,d)=>{f.doc.selections['[role="dialog"][aria-modal="true"]']=[d.dialog,d.dialog];}
+  ]) {
+    const f=fixture(), d=expiredDialog(f);change(f,d);
+    const state=global.inspect(f.doc,f.ctx);
+    assert.equal(state.verified,false);
+    assert.equal(state.code,'SEAT_MODAL_UNVERIFIED');
+    assert.equal(global.step(f.doc,f.ctx).status,'manual');
+  }
+});
+
+test('hidden expiry dialog does not override a currently visible CAPTCHA', () => {
+  const global=adapter();
+  for(const hide of [dialog=>{dialog.hidden=true;},dialog=>{dialog.getClientRects=()=>[];},dialog=>{dialog.style.display='none';}]) {
+    const f=fixture(), d=expiredDialog(f);hide(d.dialog);
+    Object.defineProperty(d.title,'textContent',{get(){throw new Error('hidden expiry must not be inspected');}});
+    assert.equal(global.inspect(f.doc,f.ctx).code,'SEAT_CAPTCHA_REQUIRED');
+    assert.equal(global.step(f.doc,f.ctx).status,'manual');
+  }
 });
 
 test('hidden or unrendered challenge layers never produce a CAPTCHA-required false positive', () => {

@@ -91,6 +91,18 @@
     if (normalizedName(title.textContent) !== normalizedName(expectedName) || normalizedName(title.textContent) !== normalizedName(observedName)) return unknown('SEAT_PRODUCT_MISMATCH', '当前选座页商品与任务或已观察的商品不一致，请人工检查。');
     const schedule = one(doc, 'span.SubHeader_scheduleDate__UaD4B');
     if (!schedule || !visible(schedule, doc) || schedule.textContent.trim() !== observedSchedule || doc.querySelectorAll('iframe, frame').length) return unknown('SEAT_DOM_UNVERIFIED', '选座页场次或页面结构尚未验证，请人工检查。');
+
+    // Expiry can unmount the map while retaining the seat header and CAPTCHA.
+    // Inspect this official dialog first; never dismiss it or restart entry.
+    const dialogs = [...doc.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(dialog => visible(dialog, doc));
+    if (dialogs.length) {
+      const dialog = dialogs[0];
+      const title = one(dialog, ':scope > div.nds-e-dialog__title');
+      const description = one(dialog, ':scope > div.nds-e-dialog__description');
+      const confirm = [...dialog.querySelectorAll('button')].filter(button => visible(button, doc) && button.textContent.trim() === '确定');
+      if (dialogs.length !== 1 || one(doc, 'div.nds-e-dialog__container[role="dialog"][aria-modal="true"]') !== dialog || !title || !visible(title, doc) || title.textContent.trim() !== '10分钟的座位选择时间已超过' || !description || !visible(description, doc) || description.textContent.trim() !== '请重新开始预订' || confirm.length !== 1) return unknown('SEAT_MODAL_UNVERIFIED', '选座页出现尚未确认的弹窗，请人工检查官网提示。');
+      return {kind:'expired',verified:true,route:'onestop-seat',code:'SEAT_SESSION_EXPIRED',productName:expectedName.trim(),scheduleText:observedSchedule,reason:`选座会话已过期：${expectedName.trim()}，场次 ${observedSchedule}。官网提示已超过10分钟选座时间，请人工检查官网页面；扩展不会处理验证码、关闭提示或自动重新入场。`};
+    }
     const image = one(doc, 'div.SeatMap_blockImg__QQUF7 img[alt="blockImg"]');
     const src = image && typeof image.getAttribute === 'function' ? image.getAttribute('src') : '';
     if (!image || !visible(image, doc) || image.getAttribute('alt') !== 'blockImg' || typeof src !== 'string' || !/^(?:https:)?\/\/ent-ticketimage\.interparkcdn\.net\/svg\/26001167\/087dd34c78914d7c972c56fc356b0e3b\.svg$/.test(src)) return unknown('SEAT_MAP_UNVERIFIED', '选座页场馆地图与任务不一致或尚未验证，请人工检查。');

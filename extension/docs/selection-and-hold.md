@@ -48,7 +48,7 @@ v0.1.5 针对本轮暴露的入口状态问题完善错误保留和恢复提示�
 
 v0.1.6 将“已在实际页面观察到队列”单独记录为 queueObserved，不据此宣称入场 API 回执成功。与任务匹配的当前队列可解除此前网络 / 回执不明确的观察阻碍，恢复时只继续观察。晚到的 API 回执不能覆盖已确认队列，也不会重复提交入场。
 
-目前 112 项 Node 测试通过；Edge / Chrome 各 6 项队列隔离检查通过，验证数字更新、错商品检查及回执不明确时的观察恢复。测试使用无参数的本机拦截页面和脱敏 DOM 夹具，没有进入真实队列、选座、锁票或订单。
+目前 115 项 Node 测试通过；Edge / Chrome 各 6 项队列隔离检查通过，验证数字更新、错商品检查及回执不明确时的观察恢复。测试使用无参数的本机拦截页面和脱敏 DOM 夹具，没有进入真实队列、选座、锁票或订单。
 
 ## 已进入正式选场与选座页
 
@@ -59,6 +59,8 @@ v0.1.6 将“已在实际页面观察到队列”单独记录为 queueObserved�
 本轮实际观察的 DOM 包括 `SubHeader_headerTitle___LjIv` 商品标题、`SubHeader_scheduleDate__UaD4B` 场次显示、`ModalCaptchaText_layerWrap__jn1bV` 验证码层和 `SeatMap_blockImg__QQUF7` 座区图。图来自官方 SVG：[场馆底图](https://ent-ticketimage.interparkcdn.net/svg/26001167/ea91e9b960c8466bad10fea7bf8a44af.svg)、[座区图](https://ent-ticketimage.interparkcdn.net/svg/26001167/087dd34c78914d7c972c56fc356b0e3b.svg)。这些图不等于实时可售座位数据。页面脚本为官方新 OneStop 前端，而非此前未取得的旧 Global ASP 页面。
 
 v0.1.6 对这一个已实测的商品、场次和布局增加只读页面识别：核对任务商品 / 场馆、完整标题、可见场次与地图，提示本人完成可见验证码。更换商品、场次或布局仍交人工检查，不自动操作验证码或座位。进一步匿名分析实际页面加载的公开脚本，已定位临时预选和确认接口；方法、异常和前端计时见 [OneStop 技术研究](onestop-flow-research.md)。这仍不能替代真实成功回执。
+
+本轮验证码没有完成，官网最终显示可见 modal：“10分钟的座位选择时间已超过”“请重新开始预订”，并移除地图。实际结构为 `div.nds-e-dialog__container[role="dialog"][aria-modal="true"]`，包含 `nds-e-dialog__title`、`nds-e-dialog__description` 及“确定”按钮。v0.1.6 在核对商品与场次后先检查该超时层，避免把底下尚存的验证码当作可继续的状态；不点击确定、不自动重启。没有进行选座、锁票或订单实验。
 
 ## 需要取得的实际证据
 
